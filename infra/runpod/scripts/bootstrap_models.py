@@ -20,7 +20,7 @@ def wait_for_json(url: str, *, timeout: int = TIMEOUT_SECONDS) -> object:
         try:
             with urlopen(url, timeout=5) as response:  # noqa: S310
                 if 200 <= response.status < 300:
-                    return json.loads(response.read().decode("utf-8"))
+                    return response.read().decode("utf-8")
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
             last_error = error
         time.sleep(2)
