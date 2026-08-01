@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -29,6 +30,20 @@ def process_ok(name: str) -> tuple[bool, str]:
     return result.returncode == 0 and "RUNNING" in output, output
 
 
+def active_sessions() -> int:
+    """Live conversations reported by the worker; stale or missing counts as 0."""
+    path = Path(
+        os.getenv("AUREN_SESSION_STATE_FILE", "/workspace/runtime/active-sessions.json")
+    )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
+        return 0
+    if time.time() - float(payload.get("updated_at", 0)) > 90:
+        return 0
+    return int(payload.get("active_sessions", 0))
+
+
 def readiness() -> tuple[bool, dict[str, object]]:
     checks: dict[str, tuple[bool, str]] = {
         "speaches": http_ok("http://127.0.0.1:8000/health"),
@@ -41,6 +56,7 @@ def readiness() -> tuple[bool, dict[str, object]]:
     return ready, {
         "status": "ready" if ready else "starting",
         "models_ready": marker,
+        "active_sessions": active_sessions(),
         "checks": {
             name: {"ok": value[0], "detail": value[1]} for name, value in checks.items()
         },

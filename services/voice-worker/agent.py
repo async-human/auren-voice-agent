@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import os
 
 import av
@@ -8,6 +9,9 @@ from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentServer, AgentSession
 from livekit.plugins import openai, silero
+
+from session_state import SessionTracker
+from tools import ToolGateway, build_tools
 
 if os.getenv("AUREN_ENV", "development") != "production":
     load_dotenv(".env.local")
@@ -28,16 +32,32 @@ FASTER_WHISPER_BASE_URL = require_env("FASTER_WHISPER_BASE_URL").rstrip("/")
 LLM_BASE_URL = require_env("LLM_BASE_URL").rstrip("/")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
 
+TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
+TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
+TOOL_GATEWAY_TIMEOUT_SECONDS = float(os.getenv("TOOL_GATEWAY_TIMEOUT_SECONDS", "20"))
+
+INSTRUCTIONS = (
+    "You are Auren, a warm, highly capable personal voice assistant. "
+    "Respond directly and naturally. Keep routine voice responses concise, "
+    "usually one to three sentences. Ask a short clarifying question when "
+    "the user's intent is ambiguous. Never expose hidden reasoning."
+)
+
+TOOL_INSTRUCTIONS = (
+    " You can check the time, look up weather, search the live web, and save or "
+    "recall the user's reminders and notes. Use a tool whenever the answer "
+    "depends on the current time, live data, or something the user asked you to "
+    "remember; do not guess. Check the current time before scheduling anything "
+    "relative to today. Speak tool results conversationally instead of reading "
+    "them out verbatim, and say so plainly when a tool could not help."
+)
+
 
 class Auren(Agent):
-    def __init__(self) -> None:
+    def __init__(self, tools: list | None = None) -> None:
         super().__init__(
-            instructions=(
-                "You are Auren, a warm, highly capable personal voice assistant. "
-                "Respond directly and naturally. Keep routine voice responses concise, "
-                "usually one to three sentences. Ask a short clarifying question when "
-                "the user's intent is ambiguous. Never expose hidden reasoning."
-            )
+            instructions=INSTRUCTIONS + (TOOL_INSTRUCTIONS if tools else ""),
+            tools=tools or [],
         )
 
     async def tts_node(self, text, model_settings):
@@ -92,18 +112,37 @@ class Auren(Agent):
 
 
 server = AgentServer()
+session_tracker = SessionTracker()
 
 
 @server.rtc_session(agent_name=LIVEKIT_AGENT_NAME)
 async def auren_session(ctx: agents.JobContext):
     await ctx.connect()
+
+    # Published for the RunPod idle watchdog so it never stops the Pod during a
+    # quiet moment in a live conversation.
+    await session_tracker.acquire()
+    ctx.add_shutdown_callback(session_tracker.release)
+
     participant = await ctx.wait_for_participant()
 
-    # Metadata is optional locally, but parsing it keeps the worker ready for
-    # future user-scoped tools and memory.
+    # The Railway API puts the caller's id in the participant token so tools and
+    # memory stay scoped to one user.
     metadata = json.loads(participant.metadata or "{}")
     user_id = metadata.get("userId", "local-user")
-    _ = user_id
+
+    gateway: ToolGateway | None = None
+    tools: list = []
+    if TOOL_GATEWAY_BASE_URL:
+        gateway = ToolGateway(
+            TOOL_GATEWAY_BASE_URL,
+            TOOL_GATEWAY_TOKEN,
+            TOOL_GATEWAY_TIMEOUT_SECONDS,
+        )
+        tools = build_tools(gateway, user_id)
+        ctx.add_shutdown_callback(gateway.aclose)
+    else:
+        logging.warning("TOOL_GATEWAY_BASE_URL is not set; Auren is running without tools")
 
     session = AgentSession(
         vad=silero.VAD.load(),
@@ -131,7 +170,7 @@ async def auren_session(ctx: agents.JobContext):
         ),
     )
 
-    await session.start(room=ctx.room, agent=Auren())
+    await session.start(room=ctx.room, agent=Auren(tools=tools))
     await session.say(
         "I’m ready. What can I help you with?",
         allow_interruptions=True,

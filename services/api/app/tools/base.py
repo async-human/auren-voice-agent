@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any, Generic, TypeVar
+
+import httpx
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings
+
+
+class ToolError(Exception):
+    """A failure the assistant should explain to the user rather than retry."""
+
+
+@dataclass
+class ToolContext:
+    user_id: str
+    settings: Settings
+    http: httpx.AsyncClient
+    session: AsyncSession
+
+
+@dataclass
+class ToolResult:
+    """Tool output.
+
+    `summary` is a short sentence the voice model can speak directly; `data`
+    carries the structured payload for future UI surfaces.
+    """
+
+    summary: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+ArgsT = TypeVar("ArgsT", bound=BaseModel)
+Handler = Callable[[ToolContext, Any], Awaitable[ToolResult]]
+
+
+@dataclass(frozen=True)
+class ToolSpec(Generic[ArgsT]):
+    name: str
+    description: str
+    args_model: type[ArgsT]
+    handler: Handler
+    # Reserved for higher-risk integrations (calendar, email, smart home) that
+    # must be confirmed by the user before the gateway executes them.
+    confirmation_required: bool = False
+
+    def parameters_schema(self) -> dict[str, Any]:
+        return self.args_model.model_json_schema()

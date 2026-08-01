@@ -1,6 +1,11 @@
-node_modules
-dist
-.npm-cache
+.venv
+.uv-cache
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+tests
 .env*
 !.env.example
+*.db
 *.log

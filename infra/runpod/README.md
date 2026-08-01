@@ -80,6 +80,51 @@ The readiness endpoint becomes HTTP 200 only after:
 - Chatterbox has loaded successfully
 - the LiveKit worker is running
 
+## Idle shutdown
+
+RunPod has no native "stop when the GPU is quiet" setting, and GPU utilisation
+alone is an unsafe signal here: it sits at zero while a user is speaking or
+thinking, so a naive threshold would hang up mid-conversation. The
+`idle-watchdog` process stops the Pod only when every signal agrees for the
+whole idle window:
+
+- the voice worker reports zero active LiveKit sessions
+- model bootstrap has completed
+- average GPU utilisation stays below `AUTO_STOP_GPU_THRESHOLD`
+
+Enable it with the `AUTO_STOP_*` variables in `runpod.env.example`, plus
+`RUNPOD_API_KEY`. Store that key as a **RunPod Secret**, never as a plain
+environment variable; it needs permission to stop Pods. `RUNPOD_POD_ID` is
+injected by RunPod. With `AUTO_STOP_ENABLED` unset the watchdog logs that it is
+off and exits, leaving the Pod running.
+
+The worker publishes its session count to
+`/workspace/runtime/active-sessions.json` with a heartbeat. The watchdog treats
+a stale file as idle, so a crashed worker cannot pin an empty Pod open. The same
+count is reported by `/health/ready` as `active_sessions`.
+
+Follow the watchdog's decisions with:
+
+```bash
+supervisorctl -c /etc/supervisor/conf.d/auren.conf tail -f idle-watchdog
+```
+
+Two costs survive a stop: persistent and network-volume storage is still billed,
+and a later start can fail temporarily if that GPU type has no capacity.
+
+For development, a fixed-duration stop is simpler and needs no API key:
+
+```bash
+nohup bash -c 'sleep 2h; runpodctl pod stop "$RUNPOD_POD_ID"' \
+  >/workspace/logs/scheduled-stop.log 2>&1 &
+```
+
+For production traffic with long idle gaps, the stronger option is moving
+inference to RunPod Serverless Flex workers, which scale to zero natively. That
+is a restructuring job rather than a setting: Serverless is request-oriented,
+while the LiveKit worker is a persistent process, and it introduces model cold
+starts on the first turn of a conversation.
+
 ## Updating
 
 Never run `git pull`, `pip install`, `uv sync`, or `ollama pull` manually in a

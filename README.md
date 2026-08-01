@@ -7,7 +7,7 @@ Deployment-ready separation for an open-source realtime voice agent.
 | Runtime | Deploys | Responsibility |
 | --- | --- | --- |
 | Vercel | Root Next.js app | Browser UI and LiveKit WebRTC client; contains no private credentials |
-| Railway | `services/api` | Authentication boundary, LiveKit token creation, future tools/memory APIs |
+| Railway | `services/api` (Python, FastAPI) | Authentication boundary, LiveKit token creation, tool gateway, database |
 | RunPod | `services/voice-worker` plus GPU model servers | LiveKit agent, faster-whisper STT, Qwen/Ollama LLM, Chatterbox TTS |
 | LiveKit Cloud | Managed realtime transport | Rooms, WebRTC media, agent dispatch |
 
@@ -15,6 +15,32 @@ The browser never connects directly to a RunPod model port. Speaches, Ollama,
 and Chatterbox should bind to `127.0.0.1` and be consumed only by the voice
 worker on the same GPU machine. A LiveKit agent makes an outbound WebSocket
 connection, so the worker requires no public inbound port.
+
+## Agent tools
+
+The worker holds no business logic. Each tool is a thin call to the Railway
+gateway, which owns the database, credentials, and audit trail, so the GPU pod
+stays a replaceable inference runtime.
+
+```text
+voice worker  --POST /v1/tools/invoke-->  Railway FastAPI  -->  database / external APIs
+```
+
+| Tool | Backing service |
+| --- | --- |
+| `get_current_time` | Standard library timezone data |
+| `get_weather` | Open-Meteo (no API key required) |
+| `create_reminder`, `list_reminders` | Application database |
+| `save_note`, `search_notes` | Application database |
+| `search_web` | Tavily, Brave, or SearXNG when configured; keyless DuckDuckGo fallback otherwise |
+
+Set `TOOL_GATEWAY_BASE_URL` and `TOOL_GATEWAY_TOKEN` on the worker to enable
+tools. With the URL unset the agent still runs, just without them.
+
+Add a new tool by writing a `ToolSpec` in `services/api/app/tools/` and
+registering it in `registry.py`, then exposing a matching `@function_tool`
+wrapper in `services/voice-worker/tools.py`. `ToolSpec.confirmation_required`
+is reserved for higher-risk integrations such as calendar and email.
 
 ## Local development
 
@@ -26,9 +52,13 @@ separate development LiveKit project and a development RunPod worker.
 ```bash
 cd services/api
 cp .env.example .env.local
-npm install
-npm run dev
+uv sync
+uv run uvicorn app.main:app --reload --port 8080
 ```
+
+The API defaults to a local SQLite file, so no database server is needed for
+development. Point `DATABASE_URL` at Postgres for staging and production.
+Run the tests with `uv run pytest`.
 
 ### 2. Vercel frontend locally
 
@@ -61,7 +91,8 @@ Use `uv run python agent.py start` in a managed production process.
 
 - Connect the repository root to Vercel.
 - Create a Railway service rooted at `services/api`; Railway detects the
-  included Dockerfile.
+  included Dockerfile. Attach a Postgres instance and set `DATABASE_URL`;
+  `postgres://` URLs are rewritten to use `asyncpg` automatically.
 - Build the included immutable RunPod GPU image from
   `infra/runpod/Dockerfile`. It contains the worker and pinned versions of all
   three model servers. Do not reinstall packages interactively or depend on
