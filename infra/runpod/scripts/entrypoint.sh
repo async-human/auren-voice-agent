@@ -20,7 +20,7 @@ if ! nvidia-smi >/dev/null 2>&1; then
   exit 1
 fi
 
-install -d -o auren -g auren \
+mkdir -p \
   /workspace/logs \
   /workspace/models \
   /workspace/models/huggingface \
@@ -29,10 +29,6 @@ install -d -o auren -g auren \
   /workspace/chatterbox/reference_audio \
   /workspace/chatterbox/outputs \
   /workspace/runtime
-
-if [[ "${AUREN_FIX_VOLUME_PERMISSIONS:-false}" == "true" ]]; then
-  chown -R auren:auren /workspace/models /workspace/logs /workspace/chatterbox
-fi
 
 rm -f /workspace/runtime/models-ready
 
