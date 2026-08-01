@@ -1,0 +1,50 @@
+server:
+  host: 127.0.0.1
+  port: 8004
+  use_ngrok: false
+  use_auth: false
+  auth_username: disabled
+  auth_password: disabled
+  log_file_path: /workspace/logs/chatterbox-server.log
+  log_file_max_size_mb: 10
+  log_file_backup_count: 5
+model:
+  repo_id: chatterbox-turbo
+tts_engine:
+  device: cuda
+  predefined_voices_path: /opt/chatterbox/voices
+  reference_audio_path: /workspace/chatterbox/reference_audio
+  default_voice_id: Olivia.wav
+paths:
+  model_cache: /workspace/models/chatterbox-local
+  output: /workspace/chatterbox/outputs
+generation_defaults:
+  temperature: 0.8
+  exaggeration: 1.1
+  cfg_weight: 0.5
+  seed: 0
+  speed_factor: 1.0
+  language: en
+audio_output:
+  format: wav
+  sample_rate: 24000
+  max_reference_duration_sec: 30
+  save_to_disk: false
+ui_state:
+  last_text: Auren is ready.
+  last_voice_mode: predefined
+  last_predefined_voice: Olivia.wav
+  last_reference_file: Olivia.wav
+  last_seed: 0
+  last_chunk_size: 180
+  last_split_text_enabled: true
+  hide_chunk_warning: true
+  hide_generation_warning: true
+  theme: dark
+  last_preset_name: null
+ui:
+  title: Auren TTS
+  show_language_select: false
+  max_predefined_voices_in_dropdown: 50
+debug:
+  save_intermediate_audio: false

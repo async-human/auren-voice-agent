@@ -1,0 +1,15 @@
+[project]
+name = "auren-voice-worker"
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "av>=14,<19",
+  "httpx>=0.27,<1",
+  "livekit-agents[turn-detector]~=1.6.7",
+  "livekit-plugins-openai~=1.6.7",
+  "livekit-plugins-silero~=1.6.7",
+  "python-dotenv>=1.0,<2",
+]
+
+[tool.uv]
+package = false
