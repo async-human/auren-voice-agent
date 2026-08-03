@@ -27,6 +27,10 @@ class ToolGateway:
             timeout=timeout,
         )
 
+    @property
+    def client(self) -> httpx.AsyncClient:
+        return self._client
+
     async def invoke(self, tool: str, user_id: str, arguments: dict[str, Any]) -> str:
         """Run a tool and return a sentence the model can speak."""
         payload = {
@@ -150,6 +154,34 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
             "search_web", user_id, {"query": query, "max_results": max_results}
         )
 
+    @function_tool
+    async def recall(query: str, limit: int = 5) -> str:
+        """Search durable personal memories about the user.
+
+        Args:
+            query: What to look up.
+            limit: Maximum memories to return.
+        """
+        return await gateway.invoke("recall", user_id, {"query": query, "limit": limit})
+
+    @function_tool
+    async def remember(content: str) -> str:
+        """Save a durable personal fact the user asked you to remember.
+
+        Args:
+            content: The fact to keep across sessions.
+        """
+        return await gateway.invoke("remember", user_id, {"content": content})
+
+    @function_tool
+    async def forget(query: str) -> str:
+        """Forget a durable personal memory matching the user's request.
+
+        Args:
+            query: Words matching the memory to forget.
+        """
+        return await gateway.invoke("forget", user_id, {"query": query})
+
     return [
         get_current_time,
         get_weather,
@@ -158,4 +190,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         save_note,
         search_notes,
         search_web,
+        recall,
+        remember,
+        forget,
     ]

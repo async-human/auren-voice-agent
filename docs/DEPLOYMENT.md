@@ -33,14 +33,29 @@ Run the public application API (Python, FastAPI):
 - PostgreSQL and migrations
 - rate limiting, audit events, and webhooks
 
-The included MVP endpoint is anonymous and rate-limited. Add real user
-authentication before a public launch and derive `userId` from the verified
-session rather than accepting it from the browser.
+Users sign in with Clerk. The browser sends its Clerk session token as a bearer
+header, and the API verifies it offline against the issuer's JWKS, so signing in
+adds no network hop to the request path. `/v1/voice/token` derives the user from
+that verified token; the id cannot be supplied by the caller. Every provider
+identity is mapped to our own `users.id`, and that internal id is what tools and
+memory are scoped to, so changing identity provider later does not orphan data.
+
+`CLERK_ISSUER` is required in production and the API refuses to start without
+it. For offline work, setting `DEV_USER_ID` with no issuer configured pins a
+single fixed user; it is ignored entirely when `AUREN_ENV=production`.
+
+Personal memory is stored on Railway. The voice worker fetches
+`/v1/memory/context` at session start and flushes transcripts plus distilled
+facts to `/v1/memory/sessions/flush` on hangup. Distillation uses the pod's
+local LLM so Railway never needs a second model dependency. Users can inspect
+and forget memories from the web UI (`GET/DELETE /v1/memory`).
 
 Tool routes (`/v1/tools`) are authenticated with the `X-Auren-Service-Token`
 shared secret and refuse to serve at all in production when
-`TOOL_GATEWAY_TOKEN` is unset. Tables are created on startup; move to Alembic
-once the data model starts changing.
+`TOOL_GATEWAY_TOKEN` is unset. Alembic owns the schema: run `uv run alembic
+upgrade head` as part of deployment. Startup creates tables automatically only
+outside production, to keep local development and tests free of a migration
+step.
 
 ### RunPod
 
@@ -92,10 +107,13 @@ these paths:
 ```text
 /web
   NEXT_PUBLIC_API_URL
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+  CLERK_SECRET_KEY
 
 /api
   AUREN_ENV
   CORS_ORIGINS
+  CLERK_ISSUER
   LIVEKIT_URL
   LIVEKIT_API_KEY
   LIVEKIT_API_SECRET

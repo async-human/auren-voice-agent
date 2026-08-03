@@ -1,5 +1,5 @@
-import VoiceAgent from "./components/voice-agent";
+import Landing from "./components/landing";
 
 export default function Home() {
-  return <VoiceAgent />;
+  return <Landing />;
 }

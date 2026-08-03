@@ -2,6 +2,9 @@
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track } from "livekit-client";
+import Link from "next/link";
+import { UserButton, useAuth } from "@clerk/nextjs";
+import MemoryPanel from "./memory-panel";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
 
@@ -25,6 +28,12 @@ function describeFailure(error: unknown): string {
   if (/Permission|NotAllowed/i.test(message)) {
     return "Your browser blocked microphone access. Allow it for this site and try again.";
   }
+  if (/Sign in to continue|401/.test(message)) {
+    return "Your session expired. Sign in again to keep talking to Auren.";
+  }
+  if (/Authentication is not configured/i.test(message)) {
+    return "The API has no identity provider configured. Set CLERK_ISSUER on the API, or DEV_USER_ID for offline work.";
+  }
   if (/signal|websocket|1006|timeout/i.test(message)) {
     return `Could not connect to LiveKit. ${message}`;
   }
@@ -41,6 +50,7 @@ const labels: Record<Phase, string> = {
 };
 
 export default function VoiceAgent() {
+  const { getToken } = useAuth();
   const [phase, setPhase] = useState<Phase>("idle");
   const [notice, setNotice] = useState("Your microphone stays in the LiveKit session");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -51,6 +61,7 @@ export default function VoiceAgent() {
   const [isTypeOpen, setIsTypeOpen] = useState(false);
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<HTMLMediaElement[]>([]);
@@ -86,19 +97,27 @@ export default function VoiceAgent() {
         throw new Error("NEXT_PUBLIC_API_URL is not configured");
       }
 
+      // The API derives the user from this token; it is never sent in the body.
+      const sessionToken = await getToken();
+      if (!sessionToken) {
+        throw new Error("Sign in to continue");
+      }
+
       const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/voice/token`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        headers: { Authorization: `Bearer ${sessionToken}` },
       });
       const connection = (await response.json()) as {
         serverUrl?: string;
         participantToken?: string;
+        detail?: string;
         error?: string;
       };
 
       if (!response.ok || !connection.serverUrl || !connection.participantToken) {
-        throw new Error(connection.error || "Voice service unavailable");
+        throw new Error(
+          connection.detail || connection.error || "Voice service unavailable",
+        );
       }
 
       const room = new Room({ adaptiveStream: true, dynacast: true });
@@ -175,7 +194,7 @@ export default function VoiceAgent() {
       setNotice("");
       setFailure(describeFailure(error));
     }
-  }, []);
+  }, [getToken]);
 
   const toggleMicrophone = useCallback(async () => {
     const room = roomRef.current;
@@ -257,12 +276,27 @@ export default function VoiceAgent() {
               <small>Private voice intelligence</small>
             </span>
           </div>
-          {phase !== "idle" && (
-            <button className="leave" onClick={() => void disconnect()}>
-              End call
+          <div className="account">
+            <Link className="leave" href="/">
+              Home
+            </Link>
+            <button
+              className="leave"
+              type="button"
+              onClick={() => setIsMemoryOpen(true)}
+            >
+              Memory
             </button>
-          )}
+            {phase !== "idle" && (
+              <button className="leave" onClick={() => void disconnect()}>
+                End call
+              </button>
+            )}
+            <UserButton />
+          </div>
         </header>
+
+        <MemoryPanel open={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
 
         <section className="stage" aria-live="polite">
           <div className={`opening ${hasConversation ? "gone" : ""}`}>

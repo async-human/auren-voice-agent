@@ -8,10 +8,11 @@
     "start": "next start"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.6.4",
     "livekit-client": "^2.15.13",
     "next": "16.2.12",
-    "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react": "^19.1.4",
+    "react-dom": "^19.1.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

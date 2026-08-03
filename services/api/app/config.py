@@ -30,6 +30,16 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./auren.db"
 
+    # Clerk issues the browser session token. The API verifies it offline
+    # against the JWKS for this issuer, so it never calls Clerk on the hot path.
+    clerk_issuer: str | None = None
+    clerk_jwks_url: str | None = None
+    clerk_jwks_cache_seconds: int = Field(default=3600, ge=60)
+
+    # Escape hatch for offline development. Ignored in production so a stray
+    # value can never bypass authentication on a deployed instance.
+    dev_user_id: str | None = None
+
     # Shared secret the voice worker presents when calling the tool gateway.
     # Required in production so tools cannot be invoked by arbitrary callers.
     tool_gateway_token: str | None = None
@@ -61,6 +71,25 @@ class Settings(BaseSettings):
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+asyncpg://", 1)
         return value
+
+    @property
+    def resolved_jwks_url(self) -> str | None:
+        if self.clerk_jwks_url:
+            return self.clerk_jwks_url
+        if self.clerk_issuer:
+            return f"{self.clerk_issuer.rstrip('/')}/.well-known/jwks.json"
+        return None
+
+    @property
+    def auth_configured(self) -> bool:
+        return bool(self.clerk_issuer and self.resolved_jwks_url)
+
+    @property
+    def dev_user_fallback(self) -> str | None:
+        """A fixed identity for offline work, never honoured in production."""
+        if self.is_production:
+            return None
+        return self.dev_user_id
 
     @property
     def cors_origin_list(self) -> list[str]:

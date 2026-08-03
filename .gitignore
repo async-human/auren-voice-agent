@@ -20,3 +20,6 @@ __pycache__/
 .pytest_cache/
 **/.pytest_cache/
 *.db
+
+# clerk configuration (can include secrets)
+/.clerk/

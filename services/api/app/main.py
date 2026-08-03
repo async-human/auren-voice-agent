@@ -12,13 +12,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_schema, create_session_factory
-from app.routers import health, tools, voice
+from app.routers import health, memory, tools, voice
+from app.security.auth import JwksCache
 from app.security.rate_limit import SlidingWindowRateLimiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("auren.api")
 
-MAX_BODY_BYTES = 16 * 1024
+# Large enough for a conversation transcript flush from the voice worker.
+MAX_BODY_BYTES = 256 * 1024
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -56,7 +58,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_engine(settings)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
-    await create_schema(engine)
+    if settings.is_production:
+        logger.info("Alembic owns the production schema; skipping create_all")
+    else:
+        await create_schema(engine)
 
     app.state.http_client = httpx.AsyncClient(
         timeout=settings.outbound_http_timeout_seconds,
@@ -64,9 +69,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         follow_redirects=True,
     )
 
+    jwks_url = settings.resolved_jwks_url
+    app.state.jwks_cache = (
+        JwksCache(jwks_url, settings.clerk_jwks_cache_seconds) if jwks_url else None
+    )
+
     if not settings.tool_gateway_token:
         logger.warning(
             "TOOL_GATEWAY_TOKEN is not set; tool routes are unauthenticated in %s",
+            settings.auren_env,
+        )
+
+    if not settings.auth_configured:
+        if settings.is_production:
+            raise RuntimeError("CLERK_ISSUER must be set in production")
+        logger.warning(
+            "CLERK_ISSUER is not set; signing in requires DEV_USER_ID in %s",
             settings.auren_env,
         )
 
@@ -100,13 +118,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_origin_list,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type", "Authorization", "X-Auren-Service-Token"],
     )
 
     app.include_router(health.router)
     app.include_router(voice.router)
     app.include_router(tools.router)
+    app.include_router(memory.worker_router)
+    app.include_router(memory.user_router)
 
     @app.exception_handler(Exception)
     async def unhandled_error(_request: Request, error: Exception) -> JSONResponse:

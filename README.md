@@ -33,6 +33,7 @@ voice worker  --POST /v1/tools/invoke-->  Railway FastAPI  -->  database / exter
 | `create_reminder`, `list_reminders` | Application database |
 | `save_note`, `search_notes` | Application database |
 | `search_web` | Tavily, Brave, or SearXNG when configured; keyless DuckDuckGo fallback otherwise |
+| `recall`, `remember`, `forget` | Personal memory tables (with UI inspect/forget) |
 
 Set `TOOL_GATEWAY_BASE_URL` and `TOOL_GATEWAY_TOKEN` on the worker to enable
 tools. With the URL unset the agent still runs, just without them.
@@ -57,8 +58,13 @@ uv run uvicorn app.main:app --reload --port 8080
 ```
 
 The API defaults to a local SQLite file, so no database server is needed for
-development. Point `DATABASE_URL` at Postgres for staging and production.
-Run the tests with `uv run pytest`.
+development. Point `DATABASE_URL` at Postgres for staging and production, where
+`uv run alembic upgrade head` applies the schema. Run the tests with
+`uv run pytest`.
+
+Set `CLERK_ISSUER` to your Clerk instance so the API can verify browser session
+tokens. To work offline without Clerk, leave it unset and set
+`DEV_USER_ID=local-developer` instead; that shortcut is ignored in production.
 
 ### 2. Vercel frontend locally
 
@@ -72,6 +78,11 @@ npm run dev
 
 Open <http://localhost:3000>. The frontend calls the API at the value of
 `NEXT_PUBLIC_API_URL`; it never receives a LiveKit API secret.
+
+Sign-in uses Clerk, so `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and
+`CLERK_SECRET_KEY` need to be set. The browser sends its Clerk session token to
+the API, which derives the user from it: the user id is never sent in the
+request body.
 
 ### 3. Voice worker development
 
@@ -104,6 +115,8 @@ Detailed boundaries, variables, and rollout steps are in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 The concrete GPU image and RunPod template instructions are in
 [`infra/runpod/README.md`](infra/runpod/README.md).
+The phased plan for memory, naturalness, and proactivity is in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Secrets
 

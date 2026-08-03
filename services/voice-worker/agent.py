@@ -7,9 +7,11 @@ import av
 import httpx
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import Agent, AgentServer, AgentSession
+from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAddedEvent
+from livekit.agents.llm import ChatMessage
 from livekit.plugins import openai, silero
 
+from memory import TranscriptBuffer, distill_with_llm, fetch_context, flush_session
 from session_state import SessionTracker
 from tools import ToolGateway, build_tools
 
@@ -30,6 +32,7 @@ for livekit_variable in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")
 
 FASTER_WHISPER_BASE_URL = require_env("FASTER_WHISPER_BASE_URL").rstrip("/")
 LLM_BASE_URL = require_env("LLM_BASE_URL").rstrip("/")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
 
 TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
@@ -45,18 +48,20 @@ INSTRUCTIONS = (
 
 TOOL_INSTRUCTIONS = (
     " You can check the time, look up weather, search the live web, and save or "
-    "recall the user's reminders and notes. Use a tool whenever the answer "
-    "depends on the current time, live data, or something the user asked you to "
-    "remember; do not guess. Check the current time before scheduling anything "
-    "relative to today. Speak tool results conversationally instead of reading "
-    "them out verbatim, and say so plainly when a tool could not help."
+    "recall the user's reminders, notes, and personal memories. Use a tool whenever "
+    "the answer depends on the current time, live data, or something the user asked "
+    "you to remember; do not guess. Check the current time before scheduling anything "
+    "relative to today. When the user shares a durable personal fact, call remember. "
+    "When they ask you to forget something, call forget. Speak tool results "
+    "conversationally instead of reading them out verbatim, and say so plainly when "
+    "a tool could not help."
 )
 
 
 class Auren(Agent):
-    def __init__(self, tools: list | None = None) -> None:
+    def __init__(self, instructions: str, tools: list | None = None) -> None:
         super().__init__(
-            instructions=INSTRUCTIONS + (TOOL_INSTRUCTIONS if tools else ""),
+            instructions=instructions,
             tools=tools or [],
         )
 
@@ -115,6 +120,19 @@ server = AgentServer()
 session_tracker = SessionTracker()
 
 
+def _message_text(item: ChatMessage) -> str:
+    text = getattr(item, "text_content", None)
+    if callable(text):
+        text = text()
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    parts: list[str] = []
+    for content in item.content or []:
+        if isinstance(content, str) and content.strip():
+            parts.append(content.strip())
+    return " ".join(parts).strip()
+
+
 @server.rtc_session(agent_name=LIVEKIT_AGENT_NAME)
 async def auren_session(ctx: agents.JobContext):
     await ctx.connect()
@@ -130,9 +148,19 @@ async def auren_session(ctx: agents.JobContext):
     # memory stay scoped to one user.
     metadata = json.loads(participant.metadata or "{}")
     user_id = metadata.get("userId", "local-user")
+    display_name = metadata.get("displayName")
+    room_name = ctx.room.name if ctx.room else None
 
     gateway: ToolGateway | None = None
     tools: list = []
+    context_block = ""
+    greeting = (
+        f"Hello {display_name.split()[0]}. I’m Auren — what can I help you with?"
+        if display_name
+        else "Hello. I’m Auren — what can I help you with?"
+    )
+    transcript = TranscriptBuffer()
+
     if TOOL_GATEWAY_BASE_URL:
         gateway = ToolGateway(
             TOOL_GATEWAY_BASE_URL,
@@ -140,9 +168,34 @@ async def auren_session(ctx: agents.JobContext):
             TOOL_GATEWAY_TIMEOUT_SECONDS,
         )
         tools = build_tools(gateway, user_id)
+        memory_context = await fetch_context(gateway.client, user_id)
+        if memory_context:
+            context_block = memory_context.get("instructions_block") or ""
+            greeting = memory_context.get("greeting") or greeting
+            display_name = memory_context.get("display_name") or display_name
+
+        async def persist_memory() -> None:
+            distilled = await distill_with_llm(
+                llm_base_url=LLM_BASE_URL,
+                llm_model=LLM_MODEL,
+                dialog=transcript.as_dialog(),
+            )
+            await flush_session(
+                gateway.client,
+                user_id=user_id,
+                room_name=room_name,
+                buffer=transcript,
+                distilled=distilled,
+            )
+
+        ctx.add_shutdown_callback(persist_memory)
         ctx.add_shutdown_callback(gateway.aclose)
     else:
         logging.warning("TOOL_GATEWAY_BASE_URL is not set; Auren is running without tools")
+
+    instructions = INSTRUCTIONS + (TOOL_INSTRUCTIONS if tools else "")
+    if context_block:
+        instructions = f"{instructions}\n\n{context_block}"
 
     session = AgentSession(
         vad=silero.VAD.load(),
@@ -155,7 +208,7 @@ async def auren_session(ctx: agents.JobContext):
             api_key="local",
         ),
         llm=openai.LLM(
-            model=os.getenv("LLM_MODEL", "qwen3:8b"),
+            model=LLM_MODEL,
             base_url=LLM_BASE_URL,
             api_key="ollama",
         ),
@@ -170,11 +223,20 @@ async def auren_session(ctx: agents.JobContext):
         ),
     )
 
-    await session.start(room=ctx.room, agent=Auren(tools=tools))
-    await session.say(
-        "I’m ready. What can I help you with?",
-        allow_interruptions=True,
-    )
+    @session.on("conversation_item_added")
+    def _on_conversation_item(event: ConversationItemAddedEvent) -> None:
+        item = event.item
+        if not isinstance(item, ChatMessage):
+            return
+        role = item.role if item.role in {"user", "assistant"} else None
+        if role is None:
+            return
+        text = _message_text(item)
+        if text:
+            transcript.add(role, text)
+
+    await session.start(room=ctx.room, agent=Auren(instructions=instructions, tools=tools))
+    await session.say(greeting, allow_interruptions=True)
 
 
 if __name__ == "__main__":

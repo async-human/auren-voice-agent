@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.config import Settings
 from app.dependencies import get_settings
-from app.models.schemas import VoiceTokenRequest, VoiceTokenResponse
-from app.security.rate_limit import client_key
+from app.models.schemas import VoiceTokenResponse
+from app.models.tables import User
+from app.security.auth import require_user
 from app.services.livekit_tokens import create_voice_session
 
 logger = logging.getLogger(__name__)
@@ -18,13 +19,14 @@ router = APIRouter(prefix="/v1/voice", tags=["voice"])
 async def create_token(
     request: Request,
     response: Response,
-    payload: VoiceTokenRequest | None = None,
     settings: Settings = Depends(get_settings),
+    user: User = Depends(require_user),
 ) -> VoiceTokenResponse:
-    request.app.state.voice_token_limiter.check(client_key(request))
+    # Keyed by user rather than by IP now that every caller is authenticated.
+    request.app.state.voice_token_limiter.check(f"user:{user.id}")
 
     try:
-        session = create_voice_session(settings, payload.user_id if payload else None)
+        session = create_voice_session(settings, user.id, user.display_name)
     except Exception:
         logger.exception("Failed to mint LiveKit token")
         raise HTTPException(
