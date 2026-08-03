@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -193,26 +194,64 @@ async def auren_session(ctx: agents.JobContext):
             context_block = memory_context.get("instructions_block") or ""
             greeting = memory_context.get("greeting") or greeting
             display_name = memory_context.get("display_name") or display_name
+            logging.info(
+                "Loaded memory context for %s (previous conversation: %s)",
+                user_id,
+                bool(memory_context.get("last_session_summary")),
+            )
 
-        async def persist_memory_then_close() -> None:
-            # Keep the gateway open until flush finishes. Separate aclose
-            # callbacks can race and drop the session summary.
-            try:
+        persist_lock = asyncio.Lock()
+        memory_persisted = False
+        gateway_closed = False
+
+        async def persist_memory() -> bool:
+            nonlocal memory_persisted
+            async with persist_lock:
+                if memory_persisted:
+                    return True
+                if gateway_closed or not transcript.turns:
+                    logging.info(
+                        "Skipping memory flush for %s (gateway_closed=%s, turns=%d)",
+                        user_id,
+                        gateway_closed,
+                        len(transcript.turns),
+                    )
+                    return False
+
+                logging.info(
+                    "Persisting conversation for %s with %d turns",
+                    user_id,
+                    len(transcript.turns),
+                )
                 distilled = await distill_with_llm(
                     llm_base_url=LLM_BASE_URL,
                     llm_model=LLM_MODEL,
                     dialog=transcript.as_dialog(),
                 )
-                await flush_session(
+                memory_persisted = await flush_session(
                     gateway.client,
                     user_id=user_id,
                     room_name=room_name,
                     buffer=transcript,
                     distilled=distilled,
                 )
+                return memory_persisted
+
+        async def persist_memory_then_close() -> None:
+            nonlocal gateway_closed
+            try:
+                await persist_memory()
             finally:
+                gateway_closed = True
                 await gateway.aclose()
 
+        def persist_when_user_leaves(disconnected: rtc.RemoteParticipant) -> None:
+            if disconnected.identity != participant.identity:
+                return
+            logging.info("User %s disconnected; flushing conversation", user_id)
+            asyncio.create_task(persist_memory())
+
+        ctx.room.on("participant_disconnected", persist_when_user_leaves)
         ctx.add_shutdown_callback(persist_memory_then_close)
     else:
         logging.warning("TOOL_GATEWAY_BASE_URL is not set; Auren is running without tools")

@@ -147,9 +147,9 @@ async def flush_session(
     room_name: str | None,
     buffer: TranscriptBuffer,
     distilled: dict[str, Any],
-) -> None:
+) -> bool:
     if not buffer.turns and not distilled.get("memories"):
-        return
+        return False
     payload = {
         "user_id": user_id,
         "room_name": room_name,
@@ -167,8 +167,10 @@ async def flush_session(
             user_id,
             response.json(),
         )
+        return True
     except httpx.HTTPError as error:
         logger.warning("Could not flush memory session: %s", error)
+        return False
 
 
 def _as_optional_str(value: Any) -> str | None:
