@@ -2,6 +2,7 @@ import io
 import json
 import logging
 import os
+import re
 
 import av
 import httpx
@@ -43,7 +44,10 @@ INSTRUCTIONS = (
     "You are Auren, a warm, highly capable personal voice assistant. "
     "Respond directly and naturally. Keep routine voice responses concise, "
     "usually one to three sentences. Ask a short clarifying question when "
-    "the user's intent is ambiguous. Never expose hidden reasoning."
+    "the user's intent is ambiguous. Adapt your tone and phrasing to the "
+    "conversation instead of using canned closers. Do not use emoji, emoticons, "
+    "or decorative symbols. Do not end every response with a question. "
+    "Never expose hidden reasoning."
 )
 
 TOOL_INSTRUCTIONS = (
@@ -52,10 +56,26 @@ TOOL_INSTRUCTIONS = (
     "the answer depends on the current time, live data, or something the user asked "
     "you to remember; do not guess. Check the current time before scheduling anything "
     "relative to today. When the user shares a durable personal fact, call remember. "
-    "When they ask you to forget something, call forget. Speak tool results "
-    "conversationally instead of reading them out verbatim, and say so plainly when "
-    "a tool could not help."
+    "When they ask you to forget something, call forget. When they ask what you "
+    "discussed last time, answer from Previous conversation in personal context if "
+    "present; otherwise call recall with query 'last conversation'. Speak tool "
+    "results conversationally instead of reading them out verbatim, and say so "
+    "plainly when a tool could not help."
 )
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\u2600-\u27BF"
+    "\u200D\uFE0F"
+    "]"
+)
+
+
+def _clean_assistant_text(text: str) -> str:
+    cleaned = _EMOJI_RE.sub("", text)
+    cleaned = re.sub(r"\s+([,.;!?])", r"\1", cleaned)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
 class Auren(Agent):
@@ -76,7 +96,7 @@ class Auren(Agent):
         async for chunk in text:
             parts.append(chunk)
 
-        spoken_text = "".join(parts).strip()
+        spoken_text = _clean_assistant_text("".join(parts))
         if not spoken_text:
             return
 
@@ -174,22 +194,26 @@ async def auren_session(ctx: agents.JobContext):
             greeting = memory_context.get("greeting") or greeting
             display_name = memory_context.get("display_name") or display_name
 
-        async def persist_memory() -> None:
-            distilled = await distill_with_llm(
-                llm_base_url=LLM_BASE_URL,
-                llm_model=LLM_MODEL,
-                dialog=transcript.as_dialog(),
-            )
-            await flush_session(
-                gateway.client,
-                user_id=user_id,
-                room_name=room_name,
-                buffer=transcript,
-                distilled=distilled,
-            )
+        async def persist_memory_then_close() -> None:
+            # Keep the gateway open until flush finishes. Separate aclose
+            # callbacks can race and drop the session summary.
+            try:
+                distilled = await distill_with_llm(
+                    llm_base_url=LLM_BASE_URL,
+                    llm_model=LLM_MODEL,
+                    dialog=transcript.as_dialog(),
+                )
+                await flush_session(
+                    gateway.client,
+                    user_id=user_id,
+                    room_name=room_name,
+                    buffer=transcript,
+                    distilled=distilled,
+                )
+            finally:
+                await gateway.aclose()
 
-        ctx.add_shutdown_callback(persist_memory)
-        ctx.add_shutdown_callback(gateway.aclose)
+        ctx.add_shutdown_callback(persist_memory_then_close)
     else:
         logging.warning("TOOL_GATEWAY_BASE_URL is not set; Auren is running without tools")
 
@@ -233,6 +257,8 @@ async def auren_session(ctx: agents.JobContext):
             return
         text = _message_text(item)
         if text:
+            if role == "assistant":
+                text = _clean_assistant_text(text)
             transcript.add(role, text)
 
     await session.start(room=ctx.room, agent=Auren(instructions=instructions, tools=tools))

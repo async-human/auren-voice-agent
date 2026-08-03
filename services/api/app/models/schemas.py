@@ -4,6 +4,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+MemoryType = Literal["semantic", "procedural"]
+MemoryStatus = Literal["candidate", "active", "superseded", "rejected", "deleted"]
+MemorySensitivity = Literal["normal", "sensitive", "restricted"]
+MemorySource = Literal["autonomous", "explicit", "imported", "derived"]
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -39,9 +44,21 @@ class ToolInvocationResponse(BaseModel):
 class MemoryItem(BaseModel):
     id: str
     content: str
+    memory_type: MemoryType
+    status: MemoryStatus
+    structured_value: dict[str, Any] | None = None
+    confidence: float
+    importance: float
+    sensitivity: MemorySensitivity
+    source: MemorySource
     created_at: str | None = None
+    updated_at: str | None = None
     last_used_at: str | None = None
+    last_confirmed_at: str | None = None
     source_session_id: str | None = None
+    valid_from: str | None = None
+    valid_until: str | None = None
+    superseded_by_id: str | None = None
 
 
 class MemoryContextResponse(BaseModel):
@@ -70,6 +87,10 @@ class SessionFlushRequest(BaseModel):
     room_name: str | None = Field(default=None, max_length=128)
     turns: list[ConversationTurnIn] = Field(default_factory=list, max_length=400)
     summary: str | None = Field(default=None, max_length=4000)
+    topics: list[str] = Field(default_factory=list, max_length=20)
+    outcomes: list[str] = Field(default_factory=list, max_length=20)
+    open_threads: list[str] = Field(default_factory=list, max_length=20)
+    importance: float = Field(default=0.5, ge=0, le=1)
     profile_summary: str | None = Field(default=None, max_length=4000)
     preferences: str | None = Field(default=None, max_length=4000)
     memories: list[DistilledMemoryIn] = Field(default_factory=list, max_length=40)

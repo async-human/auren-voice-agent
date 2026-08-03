@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +17,8 @@ from app.models.tables import (
     ConversationSession,
     ConversationTurn,
     Memory,
+    MemoryEvent,
+    MemoryEvidence,
     User,
     UserProfile,
     utcnow,
@@ -22,6 +26,19 @@ from app.models.tables import (
 
 ACTIVE_MEMORY_LIMIT = 12
 RECALL_LIMIT = 8
+LAST_CONVERSATION_TURN_LIMIT = 8
+
+_LAST_CONVERSATION_RE = re.compile(
+    r"\b("
+    r"last (conversation|session|chat|time|talk)|"
+    r"previous (conversation|session|chat)|"
+    r"what did we (discuss|talk)|"
+    r"what were we (discussing|talking)|"
+    r"our last (conversation|chat|session)|"
+    r"earlier (today|conversation|session|chat)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _iso(value) -> str | None:
@@ -32,9 +49,21 @@ def _memory_item(memory: Memory) -> MemoryItem:
     return MemoryItem(
         id=memory.id,
         content=memory.content,
+        memory_type=memory.memory_type,
+        status=memory.status,
+        structured_value=memory.structured_value,
+        confidence=memory.confidence,
+        importance=memory.importance,
+        sensitivity=memory.sensitivity,
+        source=memory.source,
         created_at=_iso(memory.created_at),
+        updated_at=_iso(memory.updated_at),
         last_used_at=_iso(memory.last_used_at),
+        last_confirmed_at=_iso(memory.last_confirmed_at),
         source_session_id=memory.source_session_id,
+        valid_from=_iso(memory.valid_from),
+        valid_until=_iso(memory.valid_until),
+        superseded_by_id=memory.superseded_by_id,
     )
 
 
@@ -78,9 +107,42 @@ def build_instructions_block(
         lines.append("- No durable memories stored yet.")
     lines.append(
         "Greet them by name when you know it. Refer to prior context only when relevant. "
+        "If they ask what you discussed last time, answer from 'Previous conversation' "
+        "when present; otherwise call recall with query 'last conversation'. "
         "If they ask you to forget something, use the forget tool."
     )
     return "\n".join(lines)
+
+
+def looks_like_last_conversation_query(query: str) -> bool:
+    return bool(_LAST_CONVERSATION_RE.search(query or ""))
+
+
+async def get_last_session(
+    session: AsyncSession, user_id: str
+) -> ConversationSession | None:
+    return await session.scalar(
+        select(ConversationSession)
+        .where(ConversationSession.user_id == user_id)
+        .where(ConversationSession.summary.is_not(None))
+        .where(ConversationSession.ended_at.is_not(None))
+        .order_by(ConversationSession.ended_at.desc())
+        .limit(1)
+    )
+
+
+async def get_session_turns(
+    session: AsyncSession, session_id: str, *, limit: int = LAST_CONVERSATION_TURN_LIMIT
+) -> list[ConversationTurn]:
+    rows = (
+        await session.scalars(
+            select(ConversationTurn)
+            .where(ConversationTurn.session_id == session_id)
+            .order_by(ConversationTurn.sequence.asc())
+            .limit(limit)
+        )
+    ).all()
+    return list(rows)
 
 
 async def get_user(session: AsyncSession, user_id: str) -> User | None:
@@ -95,20 +157,14 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
         await session.scalars(
             select(Memory)
             .where(Memory.user_id == user_id)
+            .where(Memory.status == "active")
             .where(Memory.deleted_at.is_(None))
             .order_by(Memory.created_at.desc())
             .limit(ACTIVE_MEMORY_LIMIT)
         )
     ).all()
 
-    last_session = await session.scalar(
-        select(ConversationSession)
-        .where(ConversationSession.user_id == user_id)
-        .where(ConversationSession.summary.is_not(None))
-        .where(ConversationSession.ended_at.is_not(None))
-        .order_by(ConversationSession.ended_at.desc())
-        .limit(1)
-    )
+    last_session = await get_last_session(session, user_id)
 
     display_name = user.display_name if user else None
     profile_summary = profile.summary if profile else None
@@ -137,6 +193,10 @@ async def flush_session(
         room_name=payload.room_name,
         ended_at=utcnow(),
         summary=(payload.summary or None),
+        topics=payload.topics or None,
+        outcomes=payload.outcomes or None,
+        open_threads=payload.open_threads or None,
+        importance=payload.importance,
     )
     session.add(conversation)
     await session.flush()
@@ -181,12 +241,35 @@ async def flush_session(
         content = item.content.strip()
         if not content or content.lower() in existing:
             continue
-        session.add(
-            Memory(
-                user_id=payload.user_id,
-                content=content,
-                source_session_id=conversation.id,
-            )
+        memory = Memory(
+            user_id=payload.user_id,
+            memory_type="semantic",
+            status="active",
+            content=content,
+            confidence=0.7,
+            importance=0.5,
+            sensitivity="normal",
+            source="autonomous",
+            source_session_id=conversation.id,
+        )
+        session.add(memory)
+        await session.flush()
+        session.add_all(
+            [
+                MemoryEvidence(
+                    memory_id=memory.id,
+                    user_id=payload.user_id,
+                    session_id=conversation.id,
+                    relation="supports",
+                ),
+                MemoryEvent(
+                    memory_id=memory.id,
+                    user_id=payload.user_id,
+                    event_type="created",
+                    actor="system",
+                    details={"source": "session_distillation"},
+                ),
+            ]
         )
         existing.add(content.lower())
         memories_saved += 1
@@ -204,6 +287,7 @@ async def list_memories(session: AsyncSession, user_id: str) -> list[MemoryItem]
         await session.scalars(
             select(Memory)
             .where(Memory.user_id == user_id)
+            .where(Memory.status == "active")
             .where(Memory.deleted_at.is_(None))
             .order_by(Memory.created_at.desc())
             .limit(100)
@@ -218,7 +302,18 @@ async def forget_memory(
     memory = await session.get(Memory, memory_id)
     if memory is None or memory.user_id != user_id or memory.deleted_at is not None:
         return None
-    memory.deleted_at = utcnow()
+    now = utcnow()
+    memory.status = "deleted"
+    memory.deleted_at = now
+    memory.updated_at = now
+    session.add(
+        MemoryEvent(
+            memory_id=memory.id,
+            user_id=user_id,
+            event_type="deleted",
+            actor="user",
+        )
+    )
     await session.commit()
     return memory
 
@@ -232,10 +327,27 @@ async def remember_fact(
     cleaned = content.strip()
     memory = Memory(
         user_id=user_id,
+        memory_type="semantic",
+        status="active",
         content=cleaned,
+        confidence=1.0,
+        importance=0.8,
+        sensitivity="normal",
+        source="explicit",
         source_session_id=source_session_id,
+        last_confirmed_at=utcnow(),
     )
     session.add(memory)
+    await session.flush()
+    session.add(
+        MemoryEvent(
+            memory_id=memory.id,
+            user_id=user_id,
+            event_type="created",
+            actor="user",
+            details={"source": "remember_tool"},
+        )
+    )
 
     # If the user is telling us their name, keep it on the user row so the next
     # greeting can use it without waiting for a distillation pass.
@@ -251,8 +363,6 @@ async def remember_fact(
 
 
 def _extract_preferred_name(content: str) -> str | None:
-    import re
-
     match = re.search(
         r"(?:my name is|i am|i'm|call me)\s+([A-Za-z][A-Za-z\-']{1,40})",
         content,
@@ -271,6 +381,7 @@ async def search_memories(
         await session.scalars(
             select(Memory)
             .where(Memory.user_id == user_id)
+            .where(Memory.status == "active")
             .where(Memory.deleted_at.is_(None))
             .where(Memory.content.ilike(pattern))
             .order_by(Memory.created_at.desc())
@@ -293,6 +404,7 @@ async def forget_by_query(
         await session.scalars(
             select(Memory)
             .where(Memory.user_id == user_id)
+            .where(Memory.status == "active")
             .where(Memory.deleted_at.is_(None))
             .where(Memory.content.ilike(pattern))
             .order_by(Memory.created_at.desc())
@@ -301,7 +413,18 @@ async def forget_by_query(
     ).all()
     now = utcnow()
     for memory in matches:
+        memory.status = "deleted"
         memory.deleted_at = now
+        memory.updated_at = now
+        session.add(
+            MemoryEvent(
+                memory_id=memory.id,
+                user_id=user_id,
+                event_type="deleted",
+                actor="user",
+                details={"query": query},
+            )
+        )
     if matches:
         await session.commit()
     return list(matches)

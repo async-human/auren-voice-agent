@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Index, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, Index, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -74,6 +74,10 @@ class ConversationSession(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    topics: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    outcomes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    open_threads: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
 
 
 class ConversationTurn(Base):
@@ -103,15 +107,67 @@ class UserProfile(Base):
 
 
 class Memory(Base):
-    """A durable fact Auren may recall, with provenance and soft-delete."""
+    """Canonical semantic or procedural memory with lifecycle metadata."""
 
     __tablename__ = "memories"
-    __table_args__ = (Index("ix_memories_user_created", "user_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_memories_user_created", "user_id", "created_at"),
+        Index("ix_memories_user_type_status", "user_id", "memory_type", "status"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    memory_type: Mapped[str] = mapped_column(String(16), default="semantic")
+    status: Mapped[str] = mapped_column(String(16), default="active")
     content: Mapped[str] = mapped_column(Text)
+    structured_value: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
+    sensitivity: Mapped[str] = mapped_column(String(16), default="normal")
+    source: Mapped[str] = mapped_column(String(16), default="explicit")
     source_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    superseded_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=func.now()
+    )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MemoryEvidence(Base):
+    """A source observation that supports or contradicts a memory."""
+
+    __tablename__ = "memory_evidence"
+    __table_args__ = (
+        Index("ix_memory_evidence_memory_created", "memory_id", "created_at"),
+        Index("ix_memory_evidence_user_session", "user_id", "session_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    memory_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    relation: Mapped[str] = mapped_column(String(16), default="supports")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MemoryEvent(Base):
+    """Append-only audit event for a memory lifecycle transition."""
+
+    __tablename__ = "memory_events"
+    __table_args__ = (Index("ix_memory_events_memory_created", "memory_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    memory_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_type: Mapped[str] = mapped_column(String(24))
+    actor: Mapped[str] = mapped_column(String(16), default="system")
+    details: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

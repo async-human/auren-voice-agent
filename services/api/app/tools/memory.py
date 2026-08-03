@@ -7,7 +7,14 @@ from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
 
 
 class RecallArgs(BaseModel):
-    query: str = Field(min_length=1, max_length=200, description="What to look up.")
+    query: str = Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "What to look up. Use 'last conversation' when the user asks what "
+            "you discussed previously."
+        ),
+    )
     limit: int = Field(default=5, ge=1, le=20)
 
 
@@ -28,6 +35,35 @@ class ForgetArgs(BaseModel):
 
 
 async def recall(context: ToolContext, args: RecallArgs) -> ToolResult:
+    if memory_service.looks_like_last_conversation_query(args.query):
+        last = await memory_service.get_last_session(context.session, context.user_id)
+        if last is None or not (last.summary or "").strip():
+            return ToolResult(
+                summary="I do not have a summary of our last conversation yet.",
+                data={"last_session_summary": None, "turns": []},
+            )
+        turns = await memory_service.get_session_turns(context.session, last.id)
+        highlights = [
+            f"{'You' if turn.role == 'user' else 'I'} said: {turn.text}"
+            for turn in turns[:4]
+            if (turn.text or "").strip()
+        ]
+        spoken = f"Last time we talked about {last.summary.strip()}"
+        if highlights:
+            spoken += ". Highlights: " + "; ".join(highlights)
+        spoken += "."
+        return ToolResult(
+            summary=spoken,
+            data={
+                "last_session_summary": last.summary,
+                "session_id": last.id,
+                "turns": [
+                    {"role": turn.role, "text": turn.text, "sequence": turn.sequence}
+                    for turn in turns
+                ],
+            },
+        )
+
     rows = await memory_service.search_memories(
         context.session, context.user_id, args.query, limit=args.limit
     )
@@ -82,7 +118,10 @@ async def forget(context: ToolContext, args: ForgetArgs) -> ToolResult:
 
 RECALL_SPEC = ToolSpec(
     name="recall",
-    description="Search durable personal memories about the user.",
+    description=(
+        "Search durable personal memories, or recall what was discussed in the "
+        "previous conversation when the query is about the last session."
+    ),
     args_model=RecallArgs,
     handler=recall,
 )

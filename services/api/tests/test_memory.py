@@ -32,6 +32,10 @@ async def test_memory_flush_and_context(
                 {"role": "assistant", "text": "Great to meet you, Alice.", "sequence": 1},
             ],
             "summary": "Alice introduced herself and her robotics work",
+            "topics": ["robotics", "introductions"],
+            "outcomes": ["Auren learned Alice's occupation"],
+            "open_threads": ["Ask about Alice's current robotics project"],
+            "importance": 0.8,
             "profile_summary": "Alice works on robotics.",
             "preferences": "Prefers concise answers.",
             "memories": [
@@ -52,6 +56,10 @@ async def test_memory_flush_and_context(
     assert "Alice" in payload["greeting"]
     assert "robotics" in (payload["last_session_summary"] or "").lower()
     assert len(payload["memories"]) == 2
+    assert all(memory["memory_type"] == "semantic" for memory in payload["memories"])
+    assert all(memory["status"] == "active" for memory in payload["memories"])
+    assert all(memory["source"] == "autonomous" for memory in payload["memories"])
+    assert all(memory["confidence"] == 0.7 for memory in payload["memories"])
     assert "Works on robotics" in payload["instructions_block"]
 
 
@@ -106,6 +114,14 @@ async def test_recall_remember_forget_tools(
     assert remembered.status_code == 200
     assert remembered.json()["ok"] is True
 
+    listed = await client.get("/v1/memory", headers={"Authorization": f"Bearer {token}"})
+    typed = listed.json()["memories"][0]
+    assert typed["memory_type"] == "semantic"
+    assert typed["status"] == "active"
+    assert typed["source"] == "explicit"
+    assert typed["confidence"] == 1.0
+    assert typed["last_confirmed_at"] is not None
+
     recalled = await client.post(
         "/v1/tools/invoke",
         json={
@@ -137,6 +153,60 @@ async def test_recall_remember_forget_tools(
     )
     assert empty.json()["ok"] is True
     assert "do not have anything remembered" in empty.json()["summary"]
+
+
+async def test_recall_last_conversation(
+    client: AsyncClient, make_token: Callable[..., str]
+) -> None:
+    token = make_token(subject="user_clerk_dana", name="Dana")
+    user_id = await _user_id(client, token)
+
+    missing = await client.post(
+        "/v1/tools/invoke",
+        json={
+            "tool": "recall",
+            "user_id": user_id,
+            "arguments": {"query": "what did we discuss last conversation"},
+        },
+    )
+    assert missing.status_code == 200
+    assert "do not have a summary" in missing.json()["summary"]
+
+    await client.post(
+        "/v1/memory/sessions/flush",
+        json={
+            "user_id": user_id,
+            "room_name": "auren-last",
+            "turns": [
+                {
+                    "role": "user",
+                    "text": "Let's plan the RunPod deploy tonight.",
+                    "sequence": 0,
+                },
+                {
+                    "role": "assistant",
+                    "text": "Sounds good — we can update the worker image.",
+                    "sequence": 1,
+                },
+            ],
+            "summary": "Planning the RunPod worker deploy",
+            "memories": [],
+        },
+    )
+
+    recalled = await client.post(
+        "/v1/tools/invoke",
+        json={
+            "tool": "recall",
+            "user_id": user_id,
+            "arguments": {"query": "what did we discuss in our last conversation"},
+        },
+    )
+    assert recalled.status_code == 200
+    body = recalled.json()
+    assert body["ok"] is True
+    assert "RunPod" in body["summary"]
+    assert body["data"]["last_session_summary"] == "Planning the RunPod worker deploy"
 
 
 def _decode_jwt(token: str) -> dict:

@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { Room, RoomEvent, Track } from "livekit-client";
 import Link from "next/link";
 import { UserButton, useAuth } from "@clerk/nextjs";
+import MarkdownMessage from "./markdown-message";
 import MemoryPanel from "./memory-panel";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
@@ -15,6 +16,16 @@ type Message = {
 };
 
 type InterimMessage = Pick<Message, "role" | "text">;
+
+const emojiPattern = /[\p{Extended_Pictographic}\u200d\ufe0f]/gu;
+
+function cleanAssistantText(text: string): string {
+  return text
+    .replace(emojiPattern, "")
+    .replace(/[ \t]+([,.;!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
 
 function describeFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -86,8 +97,8 @@ export default function VoiceAgent() {
     setNotice("Session ended");
   }, []);
 
-  const startSession = useCallback(async () => {
-    if (roomRef.current) return;
+  const startSession = useCallback(async (enableMicrophone = true) => {
+    if (roomRef.current) return roomRef.current;
     setPhase("connecting");
     setNotice("Securing a realtime session");
 
@@ -147,18 +158,22 @@ export default function VoiceAgent() {
           participant?.identity === room.localParticipant.identity
             ? "user"
             : "assistant";
-        const partial = segments
+        const partialText = segments
           .filter((segment) => !segment.final)
           .map((segment) => segment.text)
           .join(" ")
           .trim();
+        const partial =
+          role === "assistant" ? cleanAssistantText(partialText) : partialText;
         setInterim(partial ? { role, text: partial } : null);
 
-        const finalText = segments
+        const receivedText = segments
           .filter((segment) => segment.final)
           .map((segment) => segment.text)
           .join(" ")
           .trim();
+        const finalText =
+          role === "assistant" ? cleanAssistantText(receivedText) : receivedText;
         if (!finalText) return;
 
         setMessages((current) => [
@@ -184,15 +199,22 @@ export default function VoiceAgent() {
 
       await room.connect(connection.serverUrl, connection.participantToken);
       await room.startAudio();
-      await room.localParticipant.setMicrophoneEnabled(true);
-      setPhase("listening");
-      setNotice("Just stop talking when you’re done");
+      await room.localParticipant.setMicrophoneEnabled(enableMicrophone);
+      setIsMicMuted(!enableMicrophone);
+      setPhase(enableMicrophone ? "listening" : "paused");
+      setNotice(
+        enableMicrophone
+          ? "Just stop talking when you’re done"
+          : "Microphone off — type your message or tap to speak",
+      );
+      return room;
     } catch (error) {
       console.error("Auren session failed to start", error);
       roomRef.current = null;
       setPhase("idle");
       setNotice("");
       setFailure(describeFailure(error));
+      return null;
     }
   }, [getToken]);
 
@@ -224,6 +246,15 @@ export default function VoiceAgent() {
     });
     setIsVoiceMuted(nextMuted);
   }, [isVoiceMuted]);
+
+  const toggleTypeInput = useCallback(async () => {
+    const nextOpen = !isTypeOpen;
+    setIsTypeOpen(nextOpen);
+    if (nextOpen && !roomRef.current) {
+      setFailure(null);
+      await startSession(false);
+    }
+  }, [isTypeOpen, startSession]);
 
   const sendTextMessage = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -299,62 +330,48 @@ export default function VoiceAgent() {
         <MemoryPanel open={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
 
         <section className="stage" aria-live="polite">
-          <div className={`opening ${hasConversation ? "gone" : ""}`}>
-            <div className="eyebrow">Voice companion</div>
-            <h1>Hello. I’m <em>Auren.</em></h1>
-            <p>
-              Speak naturally or type a message. I’m here to help you work through
-              questions, ideas, and everything in between.
-            </p>
-            <div className="hints">
-              {[
-                "Help me think through an idea",
-                "Summarize something for me",
-                "Let’s plan my day",
-              ].map((hint) => (
-                <button
-                  key={hint}
-                  onClick={() => {
-                    setDraft(hint);
-                    setIsTypeOpen(true);
-                  }}
-                >
-                  “{hint}”
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {hasConversation && (
-            <div className="conversation" ref={messagesRef}>
-              {messages.map((message) => (
-                <article className={`chatMessage ${message.role}`} key={message.id}>
-                  <span className="chatSpeaker">
-                    {message.role === "user" ? "You" : "Auren"}
-                  </span>
+          <div
+            className={`conversation ${hasConversation ? "" : "conversationEmpty"}`}
+            ref={messagesRef}
+          >
+            {!hasConversation && (
+              <div className="emptyConversation">
+                <span>New conversation</span>
+                <h1>What’s on your mind?</h1>
+                <p>Speak naturally, or switch to typing whenever you prefer.</p>
+              </div>
+            )}
+            {messages.map((message) => (
+              <article className={`chatMessage ${message.role}`} key={message.id}>
+                <span className="chatSpeaker">
+                  {message.role === "user" ? "You" : "Auren"}
+                </span>
+                {message.role === "assistant" ? (
+                  <MarkdownMessage text={message.text} />
+                ) : (
                   <p className="chatBubble" dir="ltr">{message.text}</p>
-                </article>
-              ))}
-              {interim && (
-                <article className={`chatMessage ${interim.role} interimMessage`}>
-                  <span className="chatSpeaker">
-                    {interim.role === "user" ? "You" : "Auren"}
+                )}
+              </article>
+            ))}
+            {interim && (
+              <article className={`chatMessage ${interim.role} interimMessage`}>
+                <span className="chatSpeaker">
+                  {interim.role === "user" ? "You" : "Auren"}
+                </span>
+                <p className="chatBubble" dir="ltr">{interim.text}</p>
+              </article>
+            )}
+            {isWaitingForAuren && !interim && (
+              <article className="chatMessage assistant interimMessage">
+                <span className="chatSpeaker">Auren</span>
+                <div className="chatBubble thinkingBubble" aria-label="Auren is thinking">
+                  <span className="ellipsis">
+                    <i /><i /><i />
                   </span>
-                  <p className="chatBubble" dir="ltr">{interim.text}</p>
-                </article>
-              )}
-              {isWaitingForAuren && !interim && (
-                <article className="chatMessage assistant interimMessage">
-                  <span className="chatSpeaker">Auren</span>
-                  <div className="chatBubble thinkingBubble" aria-label="Auren is thinking">
-                    <span className="ellipsis">
-                      <i /><i /><i />
-                    </span>
-                  </div>
-                </article>
-              )}
-            </div>
-          )}
+                </div>
+              </article>
+            )}
+          </div>
         </section>
 
         <section className="dock">
@@ -389,8 +406,8 @@ export default function VoiceAgent() {
             </form>
           )}
 
-          {phase !== "idle" && phase !== "connecting" && (
-            <div className="controlRow">
+          <div className="controlRow">
+            {phase !== "idle" && phase !== "connecting" && (
               <button
                 onClick={toggleVoicePlayback}
                 aria-pressed={isVoiceMuted}
@@ -401,23 +418,24 @@ export default function VoiceAgent() {
                 </svg>
                 <span>{isVoiceMuted ? "Voice off" : "Auren’s voice"}</span>
               </button>
-              <button
-                onClick={() => setIsTypeOpen((open) => !open)}
-                aria-pressed={isTypeOpen}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <rect x="2" y="6" width="20" height="12" rx="2" />
-                  <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
-                </svg>
-                <span>Type</span>
+            )}
+            <button
+              onClick={() => void toggleTypeInput()}
+              aria-pressed={isTypeOpen}
+              disabled={phase === "connecting"}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="2" y="6" width="20" height="12" rx="2" />
+                <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
+              </svg>
+              <span>Type</span>
+            </button>
+            {messages.length > 0 && (
+              <button onClick={() => setMessages([])}>
+                <span>Clear</span>
               </button>
-              {messages.length > 0 && (
-                <button onClick={() => setMessages([])}>
-                  <span>Clear</span>
-                </button>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
           {failure ? (
             <p className="failure" role="alert">

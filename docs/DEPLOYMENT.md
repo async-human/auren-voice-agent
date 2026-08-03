@@ -55,7 +55,9 @@ shared secret and refuse to serve at all in production when
 `TOOL_GATEWAY_TOKEN` is unset. Alembic owns the schema: run `uv run alembic
 upgrade head` as part of deployment. Startup creates tables automatically only
 outside production, to keep local development and tests free of a migration
-step.
+step. The API image includes `alembic.ini` and `migrations/`; configure the
+migration as a Railway pre-deploy/release command rather than running it in the
+web process command, so multiple replicas cannot race the same migration.
 
 ### RunPod
 

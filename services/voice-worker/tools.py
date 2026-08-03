@@ -156,10 +156,12 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
 
     @function_tool
     async def recall(query: str, limit: int = 5) -> str:
-        """Search durable personal memories about the user.
+        """Search durable personal memories, or recall the previous conversation.
+
+        Use query 'last conversation' when the user asks what you discussed last time.
 
         Args:
-            query: What to look up.
+            query: What to look up, or 'last conversation' for the prior session.
             limit: Maximum memories to return.
         """
         return await gateway.invoke("recall", user_id, {"query": query, "limit": limit})

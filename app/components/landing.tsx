@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { SignInButton, useAuth } from "@clerk/nextjs";
+import { useAuth } from "@clerk/nextjs";
 
 export default function Landing() {
   const { isLoaded, isSignedIn } = useAuth();
@@ -30,11 +30,13 @@ export default function Landing() {
             Open studio
           </Link>
         ) : (
-          <SignInButton mode="modal" forceRedirectUrl="/talk" fallbackRedirectUrl="/talk">
-            <button type="button" className="leave" disabled={!isLoaded}>
-              Sign in
-            </button>
-          </SignInButton>
+          <Link
+            className={`leave ${!isLoaded ? "disabledLink" : ""}`}
+            href={isLoaded ? "/sign-in" : "#"}
+            aria-disabled={!isLoaded}
+          >
+            Sign in
+          </Link>
         )}
       </header>
 
@@ -55,12 +57,14 @@ export default function Landing() {
               <span>Enter the studio</span>
             </Link>
           ) : (
-            <SignInButton mode="modal" forceRedirectUrl="/talk" fallbackRedirectUrl="/talk">
-              <button type="button" className="landingPrimary" disabled={!isLoaded}>
-                <span className="pip" />
-                <span>{isLoaded ? "Sign in to talk" : "Loading…"}</span>
-              </button>
-            </SignInButton>
+            <Link
+              className={`landingPrimary ${!isLoaded ? "disabledLink" : ""}`}
+              href={isLoaded ? "/sign-in" : "#"}
+              aria-disabled={!isLoaded}
+            >
+              <span className="pip" />
+              <span>{isLoaded ? "Sign in to talk" : "Loading…"}</span>
+            </Link>
           )}
         </div>
       </main>
@@ -68,8 +72,8 @@ export default function Landing() {
       <section className="landingNote" aria-label="How Auren treats memory">
         <h2>Memory, not surveillance</h2>
         <p>
-          Auren keeps only what you ask it to remember, shows you the list, and
-          forgets on command.
+          Auren keeps useful context within your memory settings, shows you what
+          it retained, and forgets on command.
         </p>
       </section>
     </div>
