@@ -16,6 +16,30 @@ type Message = {
 };
 
 type InterimMessage = Pick<Message, "role" | "text">;
+type ToolActivityStatus = "started" | "completed" | "failed";
+type ToolActivity = {
+  tool: string;
+  invocationId: string;
+  status: ToolActivityStatus;
+};
+
+const toolLabels: Record<string, string> = {
+  get_current_time: "Current time",
+  get_weather: "Weather",
+  create_reminder: "Reminder",
+  list_reminders: "Reminders",
+  save_note: "Notes",
+  search_notes: "Note search",
+  search_web: "Web search",
+  check_tool_status: "Tool status",
+  recall: "Memory recall",
+  remember: "Memory",
+  forget: "Memory",
+};
+
+function toolLabel(tool: string): string {
+  return toolLabels[tool] ?? tool.replaceAll("_", " ");
+}
 
 const emojiPattern = /[\p{Extended_Pictographic}\u200d\ufe0f]/gu;
 
@@ -73,11 +97,13 @@ export default function VoiceAgent() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+  const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
   const roomRef = useRef<Room | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<HTMLMediaElement[]>([]);
   const voiceMutedRef = useRef(false);
   const nextId = useRef(1);
+  const toolActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const disconnect = useCallback(async () => {
     const room = roomRef.current;
@@ -89,9 +115,14 @@ export default function VoiceAgent() {
       });
     });
     audioElementsRef.current = [];
+    if (toolActivityTimerRef.current) {
+      clearTimeout(toolActivityTimerRef.current);
+      toolActivityTimerRef.current = null;
+    }
     await room.disconnect();
     roomRef.current = null;
     setInterim(null);
+    setToolActivity(null);
     setIsMicMuted(false);
     setPhase("idle");
     setNotice("Session ended");
@@ -153,6 +184,45 @@ export default function VoiceAgent() {
         });
       });
 
+      room.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+        if (topic !== "auren.tool") return;
+        try {
+          const event = JSON.parse(new TextDecoder().decode(payload)) as Partial<ToolActivity> & {
+            type?: string;
+          };
+          if (
+            event.type !== "tool_activity" ||
+            typeof event.tool !== "string" ||
+            typeof event.invocationId !== "string" ||
+            !["started", "completed", "failed"].includes(event.status ?? "")
+          ) {
+            return;
+          }
+
+          if (toolActivityTimerRef.current) {
+            clearTimeout(toolActivityTimerRef.current);
+            toolActivityTimerRef.current = null;
+          }
+          const activity = {
+            tool: event.tool,
+            invocationId: event.invocationId,
+            status: event.status as ToolActivityStatus,
+          };
+          setToolActivity(activity);
+
+          if (activity.status !== "started") {
+            toolActivityTimerRef.current = setTimeout(() => {
+              setToolActivity((current) =>
+                current?.invocationId === activity.invocationId ? null : current,
+              );
+              toolActivityTimerRef.current = null;
+            }, 1800);
+          }
+        } catch {
+          // Ignore unrelated or malformed data-channel messages.
+        }
+      });
+
       room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
         const role =
           participant?.identity === room.localParticipant.identity
@@ -192,7 +262,12 @@ export default function VoiceAgent() {
       });
 
       room.on(RoomEvent.Disconnected, () => {
+        if (toolActivityTimerRef.current) {
+          clearTimeout(toolActivityTimerRef.current);
+          toolActivityTimerRef.current = null;
+        }
         roomRef.current = null;
+        setToolActivity(null);
         setPhase("idle");
         setNotice("Disconnected");
       });
@@ -375,6 +450,27 @@ export default function VoiceAgent() {
         </section>
 
         <section className="dock">
+          <div className="toolActivitySlot" aria-live="polite" aria-atomic="true">
+            {toolActivity && (
+              <div
+                className={`toolActivity toolActivity-${toolActivity.status}`}
+                key={`${toolActivity.invocationId}-${toolActivity.status}`}
+              >
+                <span className="toolActivityMark" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>
+                  {toolActivity.status === "started"
+                    ? `Using ${toolLabel(toolActivity.tool)}`
+                    : toolActivity.status === "completed"
+                      ? `${toolLabel(toolActivity.tool)} complete`
+                      : `${toolLabel(toolActivity.tool)} unavailable`}
+                </span>
+              </div>
+            )}
+          </div>
           <button
             className="mic"
             onClick={() => void toggleMicrophone()}

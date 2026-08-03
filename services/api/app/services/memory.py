@@ -106,7 +106,10 @@ def build_instructions_block(
     else:
         lines.append("- No durable memories stored yet.")
     lines.append(
-        "Greet them by name when you know it. Refer to prior context only when relevant. "
+        "Use their name in the initial greeting when known, then use it sparingly "
+        "and only when it adds genuine warmth or clarity. Never begin routine "
+        "responses with their name or repeat it as a conversational tic. "
+        "Refer to prior context only when relevant. "
         "If they ask what you discussed last time, answer from 'Previous conversation' "
         "when present; otherwise call recall with query 'last conversation'. "
         "If they ask you to forget something, use the forget tool."

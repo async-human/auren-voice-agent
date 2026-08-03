@@ -61,6 +61,7 @@ async def test_memory_flush_and_context(
     assert all(memory["source"] == "autonomous" for memory in payload["memories"])
     assert all(memory["confidence"] == 0.7 for memory in payload["memories"])
     assert "Works on robotics" in payload["instructions_block"]
+    assert "Never begin routine responses with their name" in payload["instructions_block"]
 
 
 async def test_user_can_list_and_forget_memories(

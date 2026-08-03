@@ -119,6 +119,7 @@ async def test_tool_listing_exposes_expected_tools(client: AsyncClient) -> None:
         "save_note",
         "search_notes",
         "search_web",
+        "check_tool_status",
         "recall",
         "remember",
         "forget",

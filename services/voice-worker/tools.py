@@ -8,16 +8,25 @@ keeps the GPU pod a replaceable inference runtime.
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 import httpx
 from livekit.agents import ToolError, function_tool
 
 logger = logging.getLogger("auren.tools")
+ToolEventHandler = Callable[[dict[str, str]], Awaitable[None]]
 
 
 class ToolGateway:
-    def __init__(self, base_url: str, token: str | None, timeout: float = 20.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None,
+        timeout: float = 20.0,
+        on_event: ToolEventHandler | None = None,
+    ) -> None:
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Auren-Service-Token"] = token
@@ -26,6 +35,7 @@ class ToolGateway:
             headers=headers,
             timeout=timeout,
         )
+        self._on_event = on_event
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -33,6 +43,8 @@ class ToolGateway:
 
     async def invoke(self, tool: str, user_id: str, arguments: dict[str, Any]) -> str:
         """Run a tool and return a sentence the model can speak."""
+        invocation_id = uuid.uuid4().hex
+        await self._notify(tool, invocation_id, "started")
         payload = {
             "tool": tool,
             "user_id": user_id,
@@ -44,12 +56,30 @@ class ToolGateway:
             response.raise_for_status()
         except httpx.HTTPError as error:
             logger.warning("Tool gateway call failed for %s: %s", tool, error)
+            await self._notify(tool, invocation_id, "failed")
             raise ToolError("I could not reach my tools just now.") from error
 
         body = response.json()
         if not body.get("ok", False):
-            raise ToolError(body.get("summary") or "That did not work.")
-        return body["summary"]
+            detail = body.get("summary") or "That did not work."
+            await self._notify(tool, invocation_id, "failed")
+            raise ToolError(f"{tool} failed: {detail}")
+        await self._notify(tool, invocation_id, "completed")
+        return f"{tool} succeeded: {body['summary']}"
+
+    async def _notify(self, tool: str, invocation_id: str, status: str) -> None:
+        if self._on_event is None:
+            return
+        try:
+            await self._on_event(
+                {
+                    "tool": tool,
+                    "invocationId": invocation_id,
+                    "status": status,
+                }
+            )
+        except Exception as error:  # noqa: BLE001 - UI telemetry must not break tools
+            logger.warning("Could not publish tool activity for %s: %s", tool, error)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -155,6 +185,17 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         )
 
     @function_tool
+    async def check_tool_status(tool: Literal["web_search"] = "web_search") -> str:
+        """Dynamically check whether a tool is currently available.
+
+        Call this whenever the user asks whether a tool works or requests its status.
+
+        Args:
+            tool: The tool to probe.
+        """
+        return await gateway.invoke("check_tool_status", user_id, {"tool": tool})
+
+    @function_tool
     async def recall(query: str, limit: int = 5) -> str:
         """Search durable personal memories, or recall the previous conversation.
 
@@ -192,6 +233,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         save_note,
         search_notes,
         search_web,
+        check_tool_status,
         recall,
         remember,
         forget,

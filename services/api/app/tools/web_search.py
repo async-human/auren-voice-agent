@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
+from typing import Literal
 
+import httpx
 from pydantic import BaseModel, Field
 
 from app.config import Settings
@@ -11,6 +14,10 @@ from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
 class WebSearchArgs(BaseModel):
     query: str = Field(min_length=1, max_length=300, description="What to search for.")
     max_results: int = Field(default=3, ge=1, le=8)
+
+
+class ToolStatusArgs(BaseModel):
+    tool: Literal["web_search"] = "web_search"
 
 
 @dataclass
@@ -156,6 +163,52 @@ async def search_web(context: ToolContext, args: WebSearchArgs) -> ToolResult:
     )
 
 
+async def check_tool_status(context: ToolContext, _args: ToolStatusArgs) -> ToolResult:
+    """Probe the configured search provider instead of guessing availability."""
+    provider = resolve_provider(context.settings)
+    started = perf_counter()
+    try:
+        hits = await PROVIDERS[provider](
+            context,
+            WebSearchArgs(query="current news", max_results=1),
+        )
+    except httpx.HTTPError as error:
+        latency_ms = round((perf_counter() - started) * 1000)
+        response = getattr(error, "response", None)
+        status_code = response.status_code if response is not None else None
+        detail = (
+            f"HTTP {status_code}" if status_code is not None else "a connection error"
+        )
+        return ToolResult(
+            summary=(
+                f"Live web search is currently unavailable. The {provider} "
+                f"provider returned {detail}."
+            ),
+            data={
+                "tool": "web_search",
+                "available": False,
+                "provider": provider,
+                "latency_ms": latency_ms,
+                "status_code": status_code,
+            },
+        )
+
+    latency_ms = round((perf_counter() - started) * 1000)
+    return ToolResult(
+        summary=(
+            f"Live web search is available through {provider}; "
+            f"the provider responded in {latency_ms} milliseconds."
+        ),
+        data={
+            "tool": "web_search",
+            "available": True,
+            "provider": provider,
+            "latency_ms": latency_ms,
+            "probe_results": len(hits),
+        },
+    )
+
+
 SPEC = ToolSpec(
     name="search_web",
     description=(
@@ -164,4 +217,14 @@ SPEC = ToolSpec(
     ),
     args_model=WebSearchArgs,
     handler=search_web,
+)
+
+STATUS_SPEC = ToolSpec(
+    name="check_tool_status",
+    description=(
+        "Dynamically check whether a tool is available. Use this whenever the "
+        "user asks about tool availability or status; never guess."
+    ),
+    args_model=ToolStatusArgs,
+    handler=check_tool_status,
 )

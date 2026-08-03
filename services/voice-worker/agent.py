@@ -47,7 +47,9 @@ INSTRUCTIONS = (
     "usually one to three sentences. Ask a short clarifying question when "
     "the user's intent is ambiguous. Adapt your tone and phrasing to the "
     "conversation instead of using canned closers. Do not use emoji, emoticons, "
-    "or decorative symbols. Do not end every response with a question. "
+    "or decorative symbols. Do not end every response with a question. Use the "
+    "user's name sparingly; never prefix routine responses with it or repeat it "
+    "as a conversational habit. "
     "Never expose hidden reasoning."
 )
 
@@ -59,9 +61,12 @@ TOOL_INSTRUCTIONS = (
     "relative to today. When the user shares a durable personal fact, call remember. "
     "When they ask you to forget something, call forget. When they ask what you "
     "discussed last time, answer from Previous conversation in personal context if "
-    "present; otherwise call recall with query 'last conversation'. Speak tool "
-    "results conversationally instead of reading them out verbatim, and say so "
-    "plainly when a tool could not help."
+    "present; otherwise call recall with query 'last conversation'. When the user "
+    "asks whether a tool is available or working, call check_tool_status instead "
+    "of guessing. Tool results are authoritative: if search_web reports success, "
+    "answer from those live results and never claim that web access is unavailable. "
+    "Speak tool results conversationally instead of reading them out verbatim, and "
+    "report a failure only when the tool explicitly reports one."
 )
 
 _EMOJI_RE = re.compile(
@@ -183,10 +188,19 @@ async def auren_session(ctx: agents.JobContext):
     transcript = TranscriptBuffer()
 
     if TOOL_GATEWAY_BASE_URL:
+        async def publish_tool_activity(event: dict[str, str]) -> None:
+            payload = json.dumps({"type": "tool_activity", **event}).encode("utf-8")
+            await ctx.room.local_participant.publish_data(
+                payload,
+                reliable=True,
+                topic="auren.tool",
+            )
+
         gateway = ToolGateway(
             TOOL_GATEWAY_BASE_URL,
             TOOL_GATEWAY_TOKEN,
             TOOL_GATEWAY_TIMEOUT_SECONDS,
+            on_event=publish_tool_activity,
         )
         tools = build_tools(gateway, user_id)
         memory_context = await fetch_context(gateway.client, user_id)

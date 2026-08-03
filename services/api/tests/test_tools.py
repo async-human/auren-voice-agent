@@ -5,10 +5,10 @@ from httpx import AsyncClient
 USER = "test-user"
 
 
-async def invoke(client: AsyncClient, tool: str, **arguments) -> dict:
+async def invoke(client: AsyncClient, tool_name: str, **arguments) -> dict:
     response = await client.post(
         "/v1/tools/invoke",
-        json={"tool": tool, "user_id": USER, "arguments": arguments},
+        json={"tool": tool_name, "user_id": USER, "arguments": arguments},
     )
     assert response.status_code == 200
     return response.json()
@@ -20,6 +20,16 @@ async def test_get_current_time(client: AsyncClient) -> None:
     assert body["ok"] is True
     assert "Asia/Kolkata" in body["summary"]
     assert body["data"]["utc_offset"] == "+0530"
+
+
+async def test_web_search_status_is_checked_dynamically(client: AsyncClient) -> None:
+    body = await invoke(client, "check_tool_status", tool="web_search")
+
+    assert body["ok"] is True
+    assert body["data"]["tool"] == "web_search"
+    assert body["data"]["available"] is True
+    assert body["data"]["provider"] in {"tavily", "brave", "searxng", "duckduckgo"}
+    assert "milliseconds" in body["summary"]
 
 
 async def test_unknown_timezone_is_a_speakable_failure(client: AsyncClient) -> None:

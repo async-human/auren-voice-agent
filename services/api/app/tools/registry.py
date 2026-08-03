@@ -13,6 +13,7 @@ SPECS: tuple[ToolSpec, ...] = (
     notes.SAVE_SPEC,
     notes.SEARCH_SPEC,
     web_search.SPEC,
+    web_search.STATUS_SPEC,
     memory.RECALL_SPEC,
     memory.REMEMBER_SPEC,
     memory.FORGET_SPEC,
