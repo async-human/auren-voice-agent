@@ -43,9 +43,7 @@ async def invoke_tool(
 ) -> ToolInvocationResponse:
     """Run a tool and always answer 200.
 
-    The caller is a speaking agent mid-conversation, so a failure needs to come
-    back as something it can say out loud rather than an HTTP error it has to
-    interpret.
+    Consequential tools return a pending confirmation payload instead of executing.
     """
     context = ToolContext(
         user_id=invocation.user_id,
@@ -55,7 +53,13 @@ async def invoke_tool(
     )
 
     try:
-        result = await registry.invoke(context, invocation.tool, invocation.arguments)
+        result = await registry.invoke(
+            context,
+            invocation.tool,
+            invocation.arguments,
+            idempotency_key=invocation.idempotency_key,
+            confirmed=invocation.confirmed,
+        )
     except ToolError as error:
         return ToolInvocationResponse(
             tool=invocation.tool,

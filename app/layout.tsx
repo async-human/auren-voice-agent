@@ -1,6 +1,20 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
+import { Fraunces, Inter_Tight } from "next/font/google";
 import "./globals.css";
+
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-serif",
+  axes: ["SOFT", "WONK", "opsz"],
+});
+
+const interTight = Inter_Tight({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-sans",
+});
 
 export const metadata: Metadata = {
   title: "Auren",
@@ -14,7 +28,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       signUpFallbackRedirectUrl="/talk"
       afterSignOutUrl="/"
     >
-      <html lang="en">
+      <html lang="en" className={`${fraunces.variable} ${interTight.variable}`}>
         <body>{children}</body>
       </html>
     </ClerkProvider>

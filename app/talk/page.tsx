@@ -1,9 +1,20 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import VoiceAgent from "../components/voice-agent";
+
+const VoiceAgent = dynamic(() => import("../components/voice-agent"), {
+  ssr: false,
+  loading: () => (
+    <div className="talkGate">
+      <div className="breath" aria-hidden="true" />
+      <div className="vignette" aria-hidden="true" />
+      <p className="tip">Opening your studio…</p>
+    </div>
+  ),
+});
 
 export default function TalkPage() {
   const router = useRouter();

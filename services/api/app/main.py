@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,7 +13,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_schema, create_session_factory
-from app.routers import health, memory, page_context, tools, voice
+from app.routers import actions, connections, health, memory, page_context, tools, voice
+from app.services.scheduler import scheduler_loop
 from app.security.auth import JwksCache
 from app.security.rate_limit import SlidingWindowRateLimiter
 
@@ -88,10 +90,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             settings.auren_env,
         )
 
+    scheduler_task = asyncio.create_task(scheduler_loop(app), name="auren-scheduler")
+    app.state.scheduler_task = scheduler_task
+
     logger.info("Auren API ready in %s", settings.auren_env)
     try:
         yield
     finally:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
         await app.state.http_client.aclose()
         await engine.dispose()
 
@@ -118,7 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_origin_list,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-Auren-Service-Token"],
     )
 
@@ -128,6 +138,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(memory.worker_router)
     app.include_router(memory.user_router)
     app.include_router(page_context.router)
+    app.include_router(connections.router)
+    app.include_router(actions.router)
 
     @app.exception_handler(Exception)
     async def unhandled_error(_request: Request, error: Exception) -> JSONResponse:

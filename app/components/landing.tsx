@@ -1,17 +1,11 @@
-"use client";
-
-import Link from "next/link";
-import { useAuth } from "@clerk/nextjs";
+import { LandingNavLink, LandingPrimaryCta } from "./landing-auth";
 
 export default function Landing() {
-  const { isLoaded, isSignedIn } = useAuth();
-
   return (
     <div className="landing">
       <div className="landingField" aria-hidden="true">
         <span className="landingOrb landingOrbA" />
         <span className="landingOrb landingOrbB" />
-        <span className="landingOrb landingOrbC" />
         <span className="landingRing" />
       </div>
       <div className="vignette" aria-hidden="true" />
@@ -25,19 +19,7 @@ export default function Landing() {
             <small>Private voice intelligence</small>
           </span>
         </div>
-        {isSignedIn ? (
-          <Link className="leave" href="/talk">
-            Open studio
-          </Link>
-        ) : (
-          <Link
-            className={`leave ${!isLoaded ? "disabledLink" : ""}`}
-            href={isLoaded ? "/sign-in" : "#"}
-            aria-disabled={!isLoaded}
-          >
-            Sign in
-          </Link>
-        )}
+        <LandingNavLink />
       </header>
 
       <main className="landingHero">
@@ -51,21 +33,7 @@ export default function Landing() {
         </p>
 
         <div className="landingCta">
-          {isSignedIn ? (
-            <Link className="landingPrimary" href="/talk">
-              <span className="pip" />
-              <span>Enter the studio</span>
-            </Link>
-          ) : (
-            <Link
-              className={`landingPrimary ${!isLoaded ? "disabledLink" : ""}`}
-              href={isLoaded ? "/sign-in" : "#"}
-              aria-disabled={!isLoaded}
-            >
-              <span className="pip" />
-              <span>{isLoaded ? "Sign in to talk" : "Loading…"}</span>
-            </Link>
-          )}
+          <LandingPrimaryCta />
         </div>
       </main>
 

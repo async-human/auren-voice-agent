@@ -139,17 +139,163 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
 
     @function_tool
     async def list_reminders(
-        status: Literal["pending", "completed", "all"] = "pending",
+        status: Literal["pending", "due", "completed", "all"] = "pending",
         limit: int = 10,
     ) -> str:
         """List the user's reminders, soonest first.
 
         Args:
-            status: Which reminders to include.
+            status: Which reminders to include. Use due for fired reminders.
             limit: Maximum number to read back.
         """
         return await gateway.invoke(
             "list_reminders", user_id, {"status": status, "limit": limit}
+        )
+
+    @function_tool
+    async def list_calendar_events(days_ahead: int = 7, query: str | None = None) -> str:
+        """List upcoming Google Calendar events."""
+        return await gateway.invoke(
+            "list_calendar_events",
+            user_id,
+            {"days_ahead": days_ahead, "query": query},
+        )
+
+    @function_tool
+    async def find_free_slots(
+        days_ahead: int = 7,
+        duration_minutes: int = 30,
+    ) -> str:
+        """Find free slots on the user's Google Calendar."""
+        return await gateway.invoke(
+            "find_free_slots",
+            user_id,
+            {"days_ahead": days_ahead, "duration_minutes": duration_minutes},
+        )
+
+    @function_tool
+    async def create_calendar_event(
+        title: str,
+        start_at: str,
+        duration_minutes: int = 30,
+        attendees: list[str] | None = None,
+        description: str | None = None,
+        add_meet_link: bool = True,
+        timezone: str | None = None,
+    ) -> str:
+        """Prepare/create a Google Calendar event. Requires user confirmation."""
+        return await gateway.invoke(
+            "create_calendar_event",
+            user_id,
+            {
+                "title": title,
+                "start_at": start_at,
+                "duration_minutes": duration_minutes,
+                "attendees": attendees or [],
+                "description": description,
+                "add_meet_link": add_meet_link,
+                "timezone": timezone,
+            },
+        )
+
+    @function_tool
+    async def search_emails(query: str, max_results: int = 5) -> str:
+        """Search Gmail with a Gmail query string."""
+        return await gateway.invoke(
+            "search_emails", user_id, {"query": query, "max_results": max_results}
+        )
+
+    @function_tool
+    async def draft_email(to: str, subject: str, body: str) -> str:
+        """Draft an email for review without sending."""
+        return await gateway.invoke(
+            "draft_email", user_id, {"to": to, "subject": subject, "body": body}
+        )
+
+    @function_tool
+    async def send_email(to: str, subject: str, body: str) -> str:
+        """Send email via Gmail. Requires explicit user confirmation."""
+        return await gateway.invoke(
+            "send_email", user_id, {"to": to, "subject": subject, "body": body}
+        )
+
+    @function_tool
+    async def confirm_pending_action(action_id: str | None = None) -> str:
+        """Confirm and execute the pending consequential action."""
+        return await gateway.invoke(
+            "confirm_pending_action", user_id, {"action_id": action_id}
+        )
+
+    @function_tool
+    async def reject_pending_action(
+        action_id: str | None = None, reason: str | None = None
+    ) -> str:
+        """Reject a pending consequential action."""
+        return await gateway.invoke(
+            "reject_pending_action",
+            user_id,
+            {"action_id": action_id, "reason": reason},
+        )
+
+    @function_tool
+    async def list_pending_actions(limit: int = 5) -> str:
+        """List actions waiting for confirmation."""
+        return await gateway.invoke(
+            "list_pending_actions", user_id, {"limit": limit}
+        )
+
+    @function_tool
+    async def start_workflow(goal: str, plan: list[str] | None = None) -> str:
+        """Start a durable multi-step outcome workflow."""
+        return await gateway.invoke(
+            "start_workflow", user_id, {"goal": goal, "plan": plan or []}
+        )
+
+    @function_tool
+    async def update_workflow(
+        workflow_id: str,
+        status: str | None = None,
+        current_step: int | None = None,
+        note: str | None = None,
+    ) -> str:
+        """Update workflow progress."""
+        return await gateway.invoke(
+            "update_workflow",
+            user_id,
+            {
+                "workflow_id": workflow_id,
+                "status": status,
+                "current_step": current_step,
+                "note": note,
+            },
+        )
+
+    @function_tool
+    async def complete_workflow(workflow_id: str, result_summary: str) -> str:
+        """Mark a workflow completed after verifying outcomes."""
+        return await gateway.invoke(
+            "complete_workflow",
+            user_id,
+            {"workflow_id": workflow_id, "result_summary": result_summary},
+        )
+
+    @function_tool
+    async def schedule_followup(
+        message: str,
+        run_in_minutes: int = 1440,
+        job_type: str = "follow_up_reminder",
+        workflow_id: str | None = None,
+    ) -> str:
+        """Schedule a background follow-up that survives the voice session."""
+        return await gateway.invoke(
+            "schedule_followup",
+            user_id,
+            {
+                "message": message,
+                "run_in_minutes": run_in_minutes,
+                "job_type": job_type,
+                "workflow_id": workflow_id,
+            },
         )
 
     @function_tool
@@ -249,6 +395,19 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         search_notes,
         search_web,
         get_page_context,
+        list_calendar_events,
+        find_free_slots,
+        create_calendar_event,
+        search_emails,
+        draft_email,
+        send_email,
+        confirm_pending_action,
+        reject_pending_action,
+        list_pending_actions,
+        start_workflow,
+        update_workflow,
+        complete_workflow,
+        schedule_followup,
         check_tool_status,
         recall,
         remember,

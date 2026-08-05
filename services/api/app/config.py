@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     voice_token_rate_limit: int = Field(default=10, ge=1)
     voice_token_rate_window_seconds: int = Field(default=60, ge=1)
 
+    # Google OAuth for Calendar + Gmail (credentials stay on the API host).
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_redirect_uri: str = "http://localhost:8081/v1/connections/google/callback"
+    public_app_url: str = "http://localhost:3000"
+    token_encryption_key: str | None = None
+    scheduler_enabled: bool = True
+    scheduler_poll_seconds: int = Field(default=30, ge=5)
+
     @field_validator("livekit_url")
     @classmethod
     def _require_websocket_url(cls, value: str) -> str:

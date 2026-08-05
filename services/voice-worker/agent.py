@@ -13,7 +13,6 @@ from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAdd
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
-from language_support import ConversationLanguage, detect_language_code
 from memory import TranscriptBuffer, distill_with_llm, fetch_context, flush_session
 from screen_reader import ScreenReader
 from session_state import SessionTracker
@@ -38,9 +37,8 @@ FASTER_WHISPER_BASE_URL = require_env("FASTER_WHISPER_BASE_URL").rstrip("/")
 LLM_BASE_URL = require_env("LLM_BASE_URL").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
-CHATTERBOX_MODEL = os.getenv("CHATTERBOX_MODEL", "chatterbox-multilingual")
+CHATTERBOX_MODEL = os.getenv("CHATTERBOX_MODEL", "chatterbox-turbo")
 CHATTERBOX_VOICE = os.getenv("CHATTERBOX_VOICE", "Olivia.wav")
-STT_DETECT_LANGUAGE = os.getenv("STT_DETECT_LANGUAGE", "true").lower() == "true"
 
 TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
 TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
@@ -55,36 +53,30 @@ INSTRUCTIONS = (
     "or decorative symbols. Do not end every response with a question. Use the "
     "user's name sparingly; never prefix routine responses with it or repeat it "
     "as a conversational habit. "
-    "Always reply in the same language the user just used. If they speak Hindi, "
-    "answer in Hindi; if they speak English, answer in English; the same for any "
-    "other language you understand. Match their language turn by turn unless they "
-    "explicitly ask you to switch. "
+    "Speak English only. "
     "Never expose hidden reasoning."
 )
 
 TOOL_INSTRUCTIONS = (
-    " You can check the time, look up weather, search the live web, read the user's "
-    "shared screen, explain a page they sent from the browser extension, and save "
-    "or recall reminders, notes, and personal memories. Use a tool or live screen "
-    "read whenever the answer depends on the current time, live data, the screen, "
-    "a shared page, or something the user asked you to remember; do not guess. "
-    "Check the current time before scheduling anything relative to today. When the "
-    "user shares a durable personal fact, call remember. When they ask you to "
-    "forget something, call forget. When they ask what you discussed last time, "
-    "answer from Previous conversation in personal context if present; otherwise "
-    "call recall with query 'last conversation'. When the user asks whether a tool "
-    "is available or working, call check_tool_status instead of guessing. For "
-    "Google searches, online lookups, market news, or latest updates, always call "
-    "search_web. Never say you cannot search Google or the web when search_web is "
-    "available. When they ask what is on their screen or what they are looking at, "
-    "a live screen read is injected for you — answer from that capture and never "
-    "claim you cannot see the screen if screen content was provided. You only see "
-    "the current shared viewport; if they need text below the fold, ask them to "
-    "scroll or use Send to Auren for the full article. When they ask to explain a "
-    "page/article they sent from the extension, call get_page_context. Explain "
-    "naturally in your own words; do not read aloud verbatim unless asked. Tool "
-    "and screen results are authoritative. Speak them conversationally, and report "
-    "a failure only when one is explicitly reported."
+    " You convert spoken objectives into completed, verified outcomes. "
+    "Workflow loop: understand the goal, recall preferences from memory, ask only "
+    "for missing details, start_workflow with a short plan, execute tools, request "
+    "confirmation for consequential actions, verify success from tool results, then "
+    "complete_workflow and remember durable facts. "
+    "Never tell the user how they could do something in Google Calendar or Gmail — "
+    "do it with tools when connected. If Google is not connected, say so and ask "
+    "them to connect Google in Auren. "
+    "You have calendar tools (list_calendar_events, find_free_slots, "
+    "create_calendar_event), email tools (search_emails, draft_email, send_email), "
+    "reminders, notes, web search, page context, screen reading, and memory. "
+    "create_calendar_event and send_email require confirmation: when a tool returns "
+    "pending=true, read the preview and ask the user to confirm. On yes/confirm/"
+    "go ahead, call confirm_pending_action. On no/cancel, call reject_pending_action. "
+    "Never claim an email was sent or an event was created unless the tool result "
+    "says verified or succeeded after confirmation. "
+    "For follow-ups like 'remind me tomorrow if she doesn't reply', call "
+    "schedule_followup. Check list_reminders with status due for fired reminders. "
+    "Use memory before asking preference questions. Keep voice replies concise."
 )
 
 _EMOJI_RE = re.compile(
@@ -120,6 +112,27 @@ def _is_web_search_request(text: str) -> bool:
             r"sensex|nifty|"
             r"market (?:perform(?:ed|ance)?|today|today'?s)"
             r")\b",
+            text,
+            re.I,
+        )
+    )
+
+
+def _is_confirm_request(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(yes|yeah|yep|confirm|confirmed|go ahead|do it|approve|ok|okay|"
+            r"sounds good|please proceed|send it|schedule it)\s*[.!?]?\s*",
+            text,
+            re.I,
+        )
+    )
+
+
+def _is_reject_request(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(no|nope|cancel|reject|stop|don't|do not|never mind|nevermind)\s*[.!?]?\s*",
             text,
             re.I,
         )
@@ -199,7 +212,6 @@ class Auren(Agent):
         gateway: ToolGateway | None = None,
         user_id: str | None = None,
         screen_reader: ScreenReader | None = None,
-        conversation_language: ConversationLanguage | None = None,
     ) -> None:
         super().__init__(
             instructions=instructions,
@@ -208,7 +220,6 @@ class Auren(Agent):
         self._gateway = gateway
         self._user_id = user_id
         self._screen_reader = screen_reader
-        self._conversation_language = conversation_language or ConversationLanguage()
         self._awaiting_weather_location = False
 
     async def on_user_turn_completed(
@@ -219,15 +230,37 @@ class Auren(Agent):
         if not text:
             return
 
-        language = self._conversation_language.observe_user_text(text)
-        turn_ctx.add_message(
-            role="system",
-            content=(
-                f"The user is speaking language code '{language}'. "
-                "Reply in that language for this turn unless they explicitly "
-                "asked you to switch languages."
-            ),
-        )
+        if self._gateway is not None and self._user_id is not None and _is_confirm_request(text):
+            try:
+                result = await self._gateway.invoke(
+                    "confirm_pending_action", self._user_id, {}
+                )
+            except Exception as error:  # noqa: BLE001
+                result = f"confirm_pending_action failed: {error}"
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Authoritative confirmation result: "
+                    f"{result} Report the verified outcome. Do not claim success "
+                    "unless the tool confirms it."
+                ),
+            )
+            await self.update_chat_ctx(turn_ctx)
+            return
+
+        if self._gateway is not None and self._user_id is not None and _is_reject_request(text):
+            try:
+                result = await self._gateway.invoke(
+                    "reject_pending_action", self._user_id, {}
+                )
+            except Exception as error:  # noqa: BLE001
+                result = f"reject_pending_action failed: {error}"
+            turn_ctx.add_message(
+                role="system",
+                content=f"Authoritative rejection result: {result}",
+            )
+            await self.update_chat_ctx(turn_ctx)
+            return
 
         if self._screen_reader is not None and _is_screen_read_request(text):
             try:
@@ -352,15 +385,6 @@ class Auren(Agent):
         if not spoken_text:
             return
 
-        # Prefer the session language from the user's speech; fall back to the
-        # reply text itself so TTS still matches if detection lagged a turn.
-        reply_lang = detect_language_code(spoken_text)
-        language = (
-            reply_lang
-            if reply_lang
-            else self._conversation_language.tts_language
-        )
-
         base_url = CHATTERBOX_BASE_URL
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
@@ -370,7 +394,6 @@ class Auren(Agent):
                     "input": spoken_text,
                     "voice": CHATTERBOX_VOICE,
                     "response_format": "mp3",
-                    "language": language,
                 },
             )
             response.raise_for_status()
@@ -530,7 +553,6 @@ async def auren_session(ctx: agents.JobContext):
     if context_block:
         instructions = f"{instructions}\n\n{context_block}"
 
-    conversation_language = ConversationLanguage()
     screen_reader = ScreenReader()
     screen_reader.attach(ctx.room)
 
@@ -543,11 +565,7 @@ async def auren_session(ctx: agents.JobContext):
             ),
             base_url=FASTER_WHISPER_BASE_URL,
             api_key="local",
-            **(
-                {"detect_language": True}
-                if STT_DETECT_LANGUAGE
-                else {"language": os.getenv("STT_LANGUAGE", "en")}
-            ),
+            language="en",
         ),
         llm=openai.LLM(
             model=LLM_MODEL,
@@ -571,7 +589,6 @@ async def auren_session(ctx: agents.JobContext):
         gateway=gateway,
         user_id=user_id,
         screen_reader=screen_reader,
-        conversation_language=conversation_language,
     )
 
     @session.on("conversation_item_added")
@@ -584,8 +601,6 @@ async def auren_session(ctx: agents.JobContext):
             return
         text = _message_text(item)
         if text:
-            if role == "user":
-                conversation_language.observe_user_text(text)
             if role == "assistant":
                 text = _clean_assistant_text(text)
             transcript.add(role, text)

@@ -191,3 +191,108 @@ class PageContext(Base):
     source: Mapped[str] = mapped_column(String(32), default="extension")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class OAuthConnection(Base):
+    """Third-party OAuth credentials owned by a user (never leave the API)."""
+
+    __tablename__ = "oauth_connections"
+    __table_args__ = (
+        Index("ix_oauth_connections_user_provider", "user_id", "provider", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    provider: Mapped[str] = mapped_column(String(32))  # google
+    account_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=func.now()
+    )
+
+
+class PendingAction(Base):
+    """Consequential tool call waiting for explicit user confirmation."""
+
+    __tablename__ = "pending_actions"
+    __table_args__ = (
+        Index("ix_pending_actions_user_status", "user_id", "status"),
+        Index("ix_pending_actions_token", "confirm_token", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    tool: Mapped[str] = mapped_column(String(64))
+    arguments: Mapped[dict[str, object]] = mapped_column(JSON)
+    preview: Mapped[str] = mapped_column(Text)
+    confirm_token: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|confirmed|rejected|expired|executed
+    workflow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ActionAudit(Base):
+    """Append-only record of tool attempts, confirmations, and outcomes."""
+
+    __tablename__ = "action_audits"
+    __table_args__ = (Index("ix_action_audits_user_created", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    tool: Mapped[str] = mapped_column(String(64))
+    arguments: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(32))  # proposed|confirmed|rejected|executed|failed|verified
+    actor: Mapped[str] = mapped_column(String(16), default="system")
+    pending_action_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkflowRun(Base):
+    """Durable multi-step outcome the agent is driving to completion."""
+
+    __tablename__ = "workflow_runs"
+    __table_args__ = (Index("ix_workflow_runs_user_status", "user_id", "status"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    goal: Mapped[str] = mapped_column(Text)
+    plan: Mapped[list[object] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="active")
+    # active|awaiting_input|awaiting_approval|running|completed|failed|cancelled
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    context: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=func.now()
+    )
+
+
+class ScheduledJob(Base):
+    """Background work that outlives a voice session (follow-ups, monitors)."""
+
+    __tablename__ = "scheduled_jobs"
+    __table_args__ = (Index("ix_scheduled_jobs_due", "status", "run_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    job_type: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="scheduled")
+    # scheduled|running|completed|failed|cancelled
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

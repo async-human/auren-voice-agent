@@ -38,9 +38,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LLM_BASE_URL=http://127.0.0.1:11434/v1 \
     LLM_MODEL=qwen3:8b \
     CHATTERBOX_BASE_URL=http://127.0.0.1:8004/v1 \
-    CHATTERBOX_MODEL=chatterbox-multilingual \
+    CHATTERBOX_MODEL=chatterbox-turbo \
     CHATTERBOX_VOICE=Olivia.wav \
-    STT_DETECT_LANGUAGE=true \
     HF_HOME=/workspace/models/huggingface \
     TTS_BF16=auto
 
@@ -99,7 +98,6 @@ COPY --chown=auren:auren \
     services/voice-worker/tools.py \
     services/voice-worker/session_state.py \
     services/voice-worker/memory.py \
-    services/voice-worker/language_support.py \
     services/voice-worker/screen_reader.py \
     ./
 

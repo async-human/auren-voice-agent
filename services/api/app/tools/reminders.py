@@ -31,7 +31,7 @@ class CreateReminderArgs(BaseModel):
 
 
 class ListRemindersArgs(BaseModel):
-    status: Literal["pending", "completed", "all"] = "pending"
+    status: Literal["pending", "due", "completed", "all"] = "pending"
     limit: int = Field(default=10, ge=1, le=50)
     timezone: str | None = Field(default=None, description="Timezone used to read times back.")
 

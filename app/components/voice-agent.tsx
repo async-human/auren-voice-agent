@@ -1,11 +1,14 @@
 "use client";
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { Room, RoomEvent, Track } from "livekit-client";
 import Link from "next/link";
 import { UserButton, useAuth } from "@clerk/nextjs";
 import MarkdownMessage from "./markdown-message";
-import MemoryPanel from "./memory-panel";
+
+const MemoryPanel = dynamic(() => import("./memory-panel"), { ssr: false });
+const ConnectionsPanel = dynamic(() => import("./connections-panel"), { ssr: false });
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
 
@@ -32,6 +35,19 @@ const toolLabels: Record<string, string> = {
   search_notes: "Note search",
   search_web: "Web search",
   get_page_context: "Page reader",
+  list_calendar_events: "Calendar",
+  find_free_slots: "Free slots",
+  create_calendar_event: "Schedule event",
+  search_emails: "Email search",
+  draft_email: "Draft email",
+  send_email: "Send email",
+  confirm_pending_action: "Confirm action",
+  reject_pending_action: "Cancel action",
+  list_pending_actions: "Pending actions",
+  start_workflow: "Workflow",
+  update_workflow: "Workflow",
+  complete_workflow: "Workflow",
+  schedule_followup: "Follow-up",
   check_tool_status: "Tool status",
   recall: "Memory recall",
   remember: "Memory",
@@ -105,6 +121,7 @@ export default function VoiceAgent() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+  const [isConnectionsOpen, setIsConnectionsOpen] = useState(false);
   const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
   const [pageContext, setPageContext] = useState<PageContextMeta | null>(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -159,11 +176,19 @@ export default function VoiceAgent() {
 
   useEffect(() => {
     if (phase === "idle" || phase === "connecting") return;
-    void refreshPageContext();
-    const timer = setInterval(() => {
+
+    const poll = () => {
+      if (document.visibilityState === "hidden") return;
       void refreshPageContext();
-    }, 8000);
-    return () => clearInterval(timer);
+    };
+
+    poll();
+    const timer = setInterval(poll, 15000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
   }, [phase, refreshPageContext]);
 
   const startSession = useCallback(async (enableMicrophone = true) => {
@@ -439,7 +464,11 @@ export default function VoiceAgent() {
   useEffect(() => {
     const messagesElement = messagesRef.current;
     if (!messagesElement) return;
-    messagesElement.scrollTo({ top: messagesElement.scrollHeight, behavior: "smooth" });
+    // Instant scroll during live transcription; smooth only for settled messages.
+    messagesElement.scrollTo({
+      top: messagesElement.scrollHeight,
+      behavior: interim ? "auto" : "smooth",
+    });
   }, [interim, messages]);
 
   const latestMessage = messages.at(-1);
@@ -474,6 +503,13 @@ export default function VoiceAgent() {
             >
               Memory
             </button>
+            <button
+              className="leave"
+              type="button"
+              onClick={() => setIsConnectionsOpen(true)}
+            >
+              Connect
+            </button>
             {phase !== "idle" && (
               <button className="leave" onClick={() => void disconnect()}>
                 End call
@@ -483,7 +519,15 @@ export default function VoiceAgent() {
           </div>
         </header>
 
-        <MemoryPanel open={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
+        {isMemoryOpen && (
+          <MemoryPanel open={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
+        )}
+        {isConnectionsOpen && (
+          <ConnectionsPanel
+            open={isConnectionsOpen}
+            onClose={() => setIsConnectionsOpen(false)}
+          />
+        )}
 
         <section className="stage" aria-live="polite">
           <div
