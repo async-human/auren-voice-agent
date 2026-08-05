@@ -324,6 +324,16 @@ export default function VoiceAgent() {
         if (agentIsSpeaking) setPhase("speaking");
       });
 
+      room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+        if (participant.identity === room.localParticipant.identity) return;
+        // Agent job crashed or left — mic stays up but nothing will transcribe.
+        setFailure(
+          "Auren’s voice worker disconnected. End the call, confirm the RunPod agent is healthy, then try again.",
+        );
+        setNotice("Voice worker left the room");
+        setPhase("paused");
+      });
+
       room.on(RoomEvent.Disconnected, () => {
         if (toolActivityTimerRef.current) {
           clearTimeout(toolActivityTimerRef.current);

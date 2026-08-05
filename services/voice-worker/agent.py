@@ -386,7 +386,7 @@ class Auren(Agent):
             return
 
         base_url = CHATTERBOX_BASE_URL
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{base_url}/audio/speech",
                 json={
@@ -396,7 +396,13 @@ class Auren(Agent):
                     "response_format": "mp3",
                 },
             )
-            response.raise_for_status()
+            if response.is_error:
+                logging.error(
+                    "Chatterbox TTS failed (%s): %s",
+                    response.status_code,
+                    response.text[:500],
+                )
+                response.raise_for_status()
 
         container = av.open(io.BytesIO(response.content))
         resampler = av.AudioResampler(format="s16", layout="mono", rate=24000)
@@ -558,6 +564,8 @@ async def auren_session(ctx: agents.JobContext):
 
     session = AgentSession(
         vad=silero.VAD.load(),
+        # Match the known-good Speaches setup: REST Whisper with plugin defaults.
+        # Do not enable realtime/websocket STT — Speaches only exposes /audio/transcriptions.
         stt=openai.STT(
             model=os.getenv(
                 "FASTER_WHISPER_MODEL",
@@ -565,7 +573,6 @@ async def auren_session(ctx: agents.JobContext):
             ),
             base_url=FASTER_WHISPER_BASE_URL,
             api_key="local",
-            language="en",
         ),
         llm=openai.LLM(
             model=LLM_MODEL,
@@ -609,7 +616,15 @@ async def auren_session(ctx: agents.JobContext):
         room=ctx.room,
         agent=agent,
     )
-    await session.say(greeting, allow_interruptions=True)
+    # Never let greeting TTS take down the whole session — otherwise the room
+    # stays connected while STT/LLM die with the crashed agent job.
+    try:
+        await session.say(greeting, allow_interruptions=True)
+    except Exception:
+        logging.exception(
+            "Greeting TTS failed (model=%s). Session continues so the user can still talk.",
+            CHATTERBOX_MODEL,
+        )
 
 
 if __name__ == "__main__":
