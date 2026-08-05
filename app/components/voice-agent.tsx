@@ -107,6 +107,7 @@ export default function VoiceAgent() {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
   const [pageContext, setPageContext] = useState<PageContextMeta | null>(null);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<HTMLMediaElement[]>([]);
@@ -133,6 +134,7 @@ export default function VoiceAgent() {
     setInterim(null);
     setToolActivity(null);
     setPageContext(null);
+    setIsScreenSharing(false);
     setIsMicMuted(false);
     setPhase("idle");
     setNotice("Session ended");
@@ -304,8 +306,20 @@ export default function VoiceAgent() {
         }
         roomRef.current = null;
         setToolActivity(null);
+        setIsScreenSharing(false);
         setPhase("idle");
         setNotice("Disconnected");
+      });
+
+      room.on(RoomEvent.LocalTrackPublished, (publication) => {
+        if (publication.source === Track.Source.ScreenShare) {
+          setIsScreenSharing(true);
+        }
+      });
+      room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+        if (publication.source === Track.Source.ScreenShare) {
+          setIsScreenSharing(false);
+        }
       });
 
       await room.connect(connection.serverUrl, connection.participantToken);
@@ -348,6 +362,37 @@ export default function VoiceAgent() {
       setFailure(describeFailure(error));
     }
   }, [isMicMuted, startSession]);
+
+  const toggleScreenShare = useCallback(async () => {
+    let room = roomRef.current;
+    if (!room) {
+      setFailure(null);
+      room = await startSession(true);
+      if (!room) return;
+    }
+
+    try {
+      const nextEnabled = !isScreenSharing;
+      await room.localParticipant.setScreenShareEnabled(nextEnabled, {
+        audio: false,
+        contentHint: "detail",
+      });
+      setIsScreenSharing(nextEnabled);
+      setNotice(
+        nextEnabled
+          ? "Screen shared — ask Auren what you’re looking at"
+          : "Screen share stopped",
+      );
+    } catch (error) {
+      console.error("Screen share toggle failed", error);
+      setIsScreenSharing(false);
+      setFailure(
+        error instanceof Error && /Permission|NotAllowed/i.test(error.message)
+          ? "Screen share was blocked. Allow screen sharing in the browser, then try again."
+          : describeFailure(error),
+      );
+    }
+  }, [isScreenSharing, startSession]);
 
   const toggleVoicePlayback = useCallback(() => {
     const nextMuted = !isVoiceMuted;
@@ -561,6 +606,18 @@ export default function VoiceAgent() {
                 <span>{isVoiceMuted ? "Voice off" : "Auren’s voice"}</span>
               </button>
             )}
+            <button
+              onClick={() => void toggleScreenShare()}
+              aria-pressed={isScreenSharing}
+              disabled={phase === "connecting"}
+              className={isScreenSharing ? "screenShareActive" : undefined}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="2" y="4" width="20" height="14" rx="2" />
+                <path d="M8 20h8M12 18v2" />
+              </svg>
+              <span>{isScreenSharing ? "Sharing screen" : "Share screen"}</span>
+            </button>
             <button
               onClick={() => void toggleTypeInput()}
               aria-pressed={isTypeOpen}

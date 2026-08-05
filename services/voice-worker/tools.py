@@ -192,10 +192,10 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
     async def get_page_context() -> str:
         """Load the article or page the user sent from the Auren browser extension.
 
-        Use this whenever they ask you to explain, summarise, read, or go through
-        the current page, article, or active tab. Explain conversationally from
-        the extracted text; do not claim you cannot see the page if this tool
-        returns content.
+        Use this whenever they ask what is on their screen, what they are looking
+        at, or to explain, summarise, read, or go through the current page,
+        article, tab, or screen. Always call this before saying you cannot see
+        the screen. Explain conversationally from the extracted text.
         """
         return await gateway.invoke("get_page_context", user_id, {})
 

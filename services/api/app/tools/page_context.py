@@ -50,8 +50,9 @@ SPEC = ToolSpec(
     name="get_page_context",
     description=(
         "Load the user's currently shared browser page or article text. Use this "
-        "whenever they ask you to explain, summarise, or read the page, article, "
-        "or tab they sent from the Auren extension."
+        "whenever they ask what is on their screen, what they are looking at, or "
+        "to explain, summarise, or read the page, article, tab, or screen they "
+        "sent from the Auren extension."
     ),
     args_model=GetPageContextArgs,
     handler=get_page_context,

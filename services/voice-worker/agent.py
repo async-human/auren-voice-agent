@@ -13,7 +13,9 @@ from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAdd
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
+from language_support import ConversationLanguage, detect_language_code
 from memory import TranscriptBuffer, distill_with_llm, fetch_context, flush_session
+from screen_reader import ScreenReader
 from session_state import SessionTracker
 from tools import ToolGateway, build_tools
 
@@ -36,6 +38,9 @@ FASTER_WHISPER_BASE_URL = require_env("FASTER_WHISPER_BASE_URL").rstrip("/")
 LLM_BASE_URL = require_env("LLM_BASE_URL").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
+CHATTERBOX_MODEL = os.getenv("CHATTERBOX_MODEL", "chatterbox-multilingual")
+CHATTERBOX_VOICE = os.getenv("CHATTERBOX_VOICE", "Olivia.wav")
+STT_DETECT_LANGUAGE = os.getenv("STT_DETECT_LANGUAGE", "true").lower() == "true"
 
 TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
 TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
@@ -50,32 +55,36 @@ INSTRUCTIONS = (
     "or decorative symbols. Do not end every response with a question. Use the "
     "user's name sparingly; never prefix routine responses with it or repeat it "
     "as a conversational habit. "
+    "Always reply in the same language the user just used. If they speak Hindi, "
+    "answer in Hindi; if they speak English, answer in English; the same for any "
+    "other language you understand. Match their language turn by turn unless they "
+    "explicitly ask you to switch. "
     "Never expose hidden reasoning."
 )
 
 TOOL_INSTRUCTIONS = (
-    " You can check the time, look up weather, search the live web, explain a page "
-    "the user shared from the browser extension, and save or recall the user's "
-    "reminders, notes, and personal memories. Use a tool whenever the answer depends "
-    "on the current time, live data, a shared page, or something the user asked "
-    "you to remember; do not guess. Check the current time before scheduling anything "
-    "relative to today. When the user shares a durable personal fact, call remember. "
-    "When they ask you to forget something, call forget. When they ask what you "
-    "discussed last time, answer from Previous conversation in personal context if "
-    "present; otherwise call recall with query 'last conversation'. When the user "
-    "asks whether a tool is available or working, call check_tool_status instead "
-    "of guessing. For Google searches, online lookups, market news, or latest "
-    "updates, always call search_web. Never say you cannot search Google or the "
-    "web when search_web is available. When they ask you to explain, summarise, "
-    "read, or go through this page, article, or active tab, call get_page_context "
-    "and explain it naturally in your own words like a thoughtful friend — cover "
-    "the main argument, key points, and nuance; do not read the article aloud "
-    "verbatim unless asked. If no page is available, tell them to send it with "
-    "the Auren Page Reader extension. Tool results are authoritative: if "
-    "search_web or get_page_context reports success, answer from those results "
-    "and never claim that web access or the page is unavailable. Speak tool "
-    "results conversationally instead of reading them out verbatim, and report "
-    "a failure only when the tool explicitly reports one."
+    " You can check the time, look up weather, search the live web, read the user's "
+    "shared screen, explain a page they sent from the browser extension, and save "
+    "or recall reminders, notes, and personal memories. Use a tool or live screen "
+    "read whenever the answer depends on the current time, live data, the screen, "
+    "a shared page, or something the user asked you to remember; do not guess. "
+    "Check the current time before scheduling anything relative to today. When the "
+    "user shares a durable personal fact, call remember. When they ask you to "
+    "forget something, call forget. When they ask what you discussed last time, "
+    "answer from Previous conversation in personal context if present; otherwise "
+    "call recall with query 'last conversation'. When the user asks whether a tool "
+    "is available or working, call check_tool_status instead of guessing. For "
+    "Google searches, online lookups, market news, or latest updates, always call "
+    "search_web. Never say you cannot search Google or the web when search_web is "
+    "available. When they ask what is on their screen or what they are looking at, "
+    "a live screen read is injected for you — answer from that capture and never "
+    "claim you cannot see the screen if screen content was provided. You only see "
+    "the current shared viewport; if they need text below the fold, ask them to "
+    "scroll or use Send to Auren for the full article. When they ask to explain a "
+    "page/article they sent from the extension, call get_page_context. Explain "
+    "naturally in your own words; do not read aloud verbatim unless asked. Tool "
+    "and screen results are authoritative. Speak them conversationally, and report "
+    "a failure only when one is explicitly reported."
 )
 
 _EMOJI_RE = re.compile(
@@ -117,6 +126,24 @@ def _is_web_search_request(text: str) -> bool:
     )
 
 
+def _is_screen_read_request(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b("
+            r"what(?:'s| is) on (?:my|the) screen|"
+            r"what (?:am i|i(?:'?m| am) looking at)|"
+            r"looking at (?:on )?(?:my |the )?screen|"
+            r"(?:see|read|explain|describe|summarise|summarize) (?:my |the )?screen|"
+            r"read (?:this|what(?:'s| is) on) (?:my |the )?screen|"
+            r"can you see (?:my |the )?screen|"
+            r"look at (?:my |the )?screen"
+            r")\b",
+            text,
+            re.I,
+        )
+    )
+
+
 def _is_page_explain_request(text: str) -> bool:
     return bool(
         re.search(
@@ -125,7 +152,8 @@ def _is_page_explain_request(text: str) -> bool:
             r"go through|tell me about|what(?:'s| is) .{0,40}about)"
             r".{0,40}\b(?:this|the|my|current|active)\b.{0,20}"
             r"\b(?:page|article|tab|post|essay|piece)\b|"
-            r"\b(?:page|article|tab)\b.{0,20}\b(?:i (?:just )?sent|i shared|from the extension)\b|"
+            r"\b(?:page|article|tab)\b.{0,20}"
+            r"\b(?:i (?:just )?sent|i shared|from the extension)\b|"
             r"\bactive (?:tab|page)\b|"
             r"\bexplain (?:this|that)\b"
             r")",
@@ -170,6 +198,8 @@ class Auren(Agent):
         tools: list | None = None,
         gateway: ToolGateway | None = None,
         user_id: str | None = None,
+        screen_reader: ScreenReader | None = None,
+        conversation_language: ConversationLanguage | None = None,
     ) -> None:
         super().__init__(
             instructions=instructions,
@@ -177,17 +207,47 @@ class Auren(Agent):
         )
         self._gateway = gateway
         self._user_id = user_id
+        self._screen_reader = screen_reader
+        self._conversation_language = conversation_language or ConversationLanguage()
         self._awaiting_weather_location = False
 
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage
     ) -> None:
         """Deterministically resolve obvious live-data intents before generation."""
-        if self._gateway is None or self._user_id is None:
-            return
-
         text = _message_text(new_message)
         if not text:
+            return
+
+        language = self._conversation_language.observe_user_text(text)
+        turn_ctx.add_message(
+            role="system",
+            content=(
+                f"The user is speaking language code '{language}'. "
+                "Reply in that language for this turn unless they explicitly "
+                "asked you to switch languages."
+            ),
+        )
+
+        if self._screen_reader is not None and _is_screen_read_request(text):
+            try:
+                result = await self._screen_reader.read_screen()
+            except Exception as error:  # noqa: BLE001 - speakable failure
+                result = f"screen read failed: {error}"
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Authoritative live screen read for this turn: "
+                    f"{result} Answer from this capture like a person looking at "
+                    "their screen with them. Explain naturally. Do not claim you "
+                    "cannot see the screen if content was captured. If no share is "
+                    "available, ask them to tap Share screen in the talk UI."
+                ),
+            )
+            await self.update_chat_ctx(turn_ctx)
+            return
+
+        if self._gateway is None or self._user_id is None:
             return
 
         weather_requested = _is_weather_request(text)
@@ -292,15 +352,25 @@ class Auren(Agent):
         if not spoken_text:
             return
 
+        # Prefer the session language from the user's speech; fall back to the
+        # reply text itself so TTS still matches if detection lagged a turn.
+        reply_lang = detect_language_code(spoken_text)
+        language = (
+            reply_lang
+            if reply_lang
+            else self._conversation_language.tts_language
+        )
+
         base_url = CHATTERBOX_BASE_URL
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 f"{base_url}/audio/speech",
                 json={
-                    "model": os.getenv("CHATTERBOX_MODEL", "chatterbox-turbo"),
+                    "model": CHATTERBOX_MODEL,
                     "input": spoken_text,
-                    "voice": os.getenv("CHATTERBOX_VOICE", "Olivia.wav"),
+                    "voice": CHATTERBOX_VOICE,
                     "response_format": "mp3",
+                    "language": language,
                 },
             )
             response.raise_for_status()
@@ -460,6 +530,10 @@ async def auren_session(ctx: agents.JobContext):
     if context_block:
         instructions = f"{instructions}\n\n{context_block}"
 
+    conversation_language = ConversationLanguage()
+    screen_reader = ScreenReader()
+    screen_reader.attach(ctx.room)
+
     session = AgentSession(
         vad=silero.VAD.load(),
         stt=openai.STT(
@@ -469,6 +543,11 @@ async def auren_session(ctx: agents.JobContext):
             ),
             base_url=FASTER_WHISPER_BASE_URL,
             api_key="local",
+            **(
+                {"detect_language": True}
+                if STT_DETECT_LANGUAGE
+                else {"language": os.getenv("STT_LANGUAGE", "en")}
+            ),
         ),
         llm=openai.LLM(
             model=LLM_MODEL,
@@ -478,12 +557,21 @@ async def auren_session(ctx: agents.JobContext):
         # The custom tts_node above owns synthesis. Keeping this configured
         # preserves LiveKit's audio-output capability detection.
         tts=openai.TTS(
-            model=os.getenv("CHATTERBOX_MODEL", "chatterbox-turbo"),
-            voice=os.getenv("CHATTERBOX_VOICE", "Olivia.wav"),
+            model=CHATTERBOX_MODEL,
+            voice=CHATTERBOX_VOICE,
             base_url=CHATTERBOX_BASE_URL,
             api_key="local",
             response_format="mp3",
         ),
+    )
+
+    agent = Auren(
+        instructions=instructions,
+        tools=tools,
+        gateway=gateway,
+        user_id=user_id,
+        screen_reader=screen_reader,
+        conversation_language=conversation_language,
     )
 
     @session.on("conversation_item_added")
@@ -496,18 +584,15 @@ async def auren_session(ctx: agents.JobContext):
             return
         text = _message_text(item)
         if text:
+            if role == "user":
+                conversation_language.observe_user_text(text)
             if role == "assistant":
                 text = _clean_assistant_text(text)
             transcript.add(role, text)
 
     await session.start(
         room=ctx.room,
-        agent=Auren(
-            instructions=instructions,
-            tools=tools,
-            gateway=gateway,
-            user_id=user_id,
-        ),
+        agent=agent,
     )
     await session.say(greeting, allow_interruptions=True)
 

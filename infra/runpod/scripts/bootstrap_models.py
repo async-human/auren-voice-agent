@@ -44,9 +44,7 @@ def preload_whisper() -> None:
     )
 
 
-def preload_ollama() -> None:
-    model = os.getenv("LLM_MODEL", "qwen3:8b")
-    wait_for_json("http://127.0.0.1:11434/api/version")
+def _pull_and_warm_ollama(model: str) -> None:
     print(f"Pulling Ollama model {model}", flush=True)
     subprocess.run(["/usr/local/bin/ollama", "pull", model], check=True)
 
@@ -68,6 +66,16 @@ def preload_ollama() -> None:
     with urlopen(request, timeout=300) as response:  # noqa: S310
         if response.status != 200:
             raise RuntimeError(f"Ollama warmup returned HTTP {response.status}")
+
+
+def preload_ollama() -> None:
+    wait_for_json("http://127.0.0.1:11434/api/version")
+    _pull_and_warm_ollama(os.getenv("LLM_MODEL", "qwen3:8b"))
+
+    if os.getenv("VISION_PRELOAD", "true").lower() == "true":
+        vision_model = os.getenv("VISION_MODEL", "qwen2.5vl:3b")
+        if vision_model and vision_model != os.getenv("LLM_MODEL", "qwen3:8b"):
+            _pull_and_warm_ollama(vision_model)
 
 
 def main() -> None:
