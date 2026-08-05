@@ -94,7 +94,14 @@ COPY services/voice-worker/pyproject.toml services/voice-worker/uv.lock ./
 RUN uv sync --locked --no-dev --compile-bytecode \
     && rm -rf /tmp/uv-cache \
     && chown -R auren:auren /opt/auren-worker
-COPY --chown=auren:auren services/voice-worker/agent.py services/voice-worker/tools.py services/voice-worker/session_state.py services/voice-worker/memory.py ./
+COPY --chown=auren:auren \
+    services/voice-worker/agent.py \
+    services/voice-worker/tools.py \
+    services/voice-worker/session_state.py \
+    services/voice-worker/memory.py \
+    services/voice-worker/language_support.py \
+    services/voice-worker/screen_reader.py \
+    ./
 
 COPY infra/runpod/supervisord.conf /etc/supervisor/conf.d/auren.conf
 COPY --chown=auren:auren --chmod=0755 infra/runpod/scripts /opt/auren/bin
