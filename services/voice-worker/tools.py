@@ -174,7 +174,11 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
 
     @function_tool
     async def search_web(query: str, max_results: int = 3) -> str:
-        """Search the live web for current information or recent events.
+        """Search the live web for current information, news, markets, or Google-style queries.
+
+        Use this whenever the user asks for a Google search, online lookup, latest
+        news, or any fact that may have changed recently. Never claim you cannot
+        search Google; this tool is the live web search path.
 
         Args:
             query: What to search for.

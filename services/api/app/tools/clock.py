@@ -15,11 +15,26 @@ class CurrentTimeArgs(BaseModel):
     )
 
 
+_TIMEZONE_ALIASES = {
+    "IST": "Asia/Kolkata",
+    "INDIA": "Asia/Kolkata",
+    "INDIAN": "Asia/Kolkata",
+    "BST": "Europe/London",
+    "GMT": "Etc/GMT",
+    "UTC": "UTC",
+}
+
+
 def resolve_zone(name: str) -> ZoneInfo:
+    cleaned = (name or "").strip()
+    resolved = _TIMEZONE_ALIASES.get(cleaned.upper(), cleaned)
     try:
-        return ZoneInfo(name)
+        return ZoneInfo(resolved)
     except (ZoneInfoNotFoundError, ValueError) as error:
-        raise ToolError(f"'{name}' is not a recognised timezone") from error
+        raise ToolError(
+            f"'{name}' is not a recognised timezone. Use an IANA name such as "
+            "Asia/Kolkata."
+        ) from error
 
 
 def spoken_datetime(moment: datetime) -> str:

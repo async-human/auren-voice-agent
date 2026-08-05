@@ -151,9 +151,17 @@ async def search_web(context: ToolContext, args: WebSearchArgs) -> ToolResult:
     if not hits:
         raise ToolError(f"I could not find anything useful about {args.query}.")
 
-    spoken = " ".join(f"{hit.title}. {hit.snippet}" for hit in hits)
+    spoken_parts = []
+    for index, hit in enumerate(hits, start=1):
+        title = (hit.title or "").strip() or f"Result {index}"
+        snippet = (hit.snippet or "").strip()
+        spoken_parts.append(f"{index}. {title}: {snippet}" if snippet else f"{index}. {title}")
+    spoken = " ".join(spoken_parts)
     return ToolResult(
-        summary=spoken[:1200],
+        summary=(
+            f"Live web search via {provider} found {len(hits)} result"
+            f"{'' if len(hits) == 1 else 's'} for {args.query}. {spoken}"
+        )[:1600],
         data={
             "provider": provider,
             "results": [
@@ -212,8 +220,9 @@ async def check_tool_status(context: ToolContext, _args: ToolStatusArgs) -> Tool
 SPEC = ToolSpec(
     name="search_web",
     description=(
-        "Search the live web for current information, news, or facts that may "
-        "have changed since training."
+        "Search the live web for current information, news, markets, sports, "
+        "or any Google-style query. This is the tool to use whenever the user "
+        "asks you to search Google, look something up online, or fetch latest news."
     ),
     args_model=WebSearchArgs,
     handler=search_web,

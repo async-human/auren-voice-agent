@@ -63,10 +63,13 @@ TOOL_INSTRUCTIONS = (
     "discussed last time, answer from Previous conversation in personal context if "
     "present; otherwise call recall with query 'last conversation'. When the user "
     "asks whether a tool is available or working, call check_tool_status instead "
-    "of guessing. Tool results are authoritative: if search_web reports success, "
-    "answer from those live results and never claim that web access is unavailable. "
-    "Speak tool results conversationally instead of reading them out verbatim, and "
-    "report a failure only when the tool explicitly reports one."
+    "of guessing. For Google searches, online lookups, market news, or latest "
+    "updates, always call search_web. Never say you cannot search Google or the "
+    "web when search_web is available. Tool results are authoritative: if "
+    "search_web reports success, answer from those live results and never claim "
+    "that web access is unavailable. Speak tool results conversationally instead "
+    "of reading them out verbatim, and report a failure only when the tool "
+    "explicitly reports one."
 )
 
 _EMOJI_RE = re.compile(
@@ -91,8 +94,17 @@ def _is_weather_request(text: str) -> bool:
 def _is_web_search_request(text: str) -> bool:
     return bool(
         re.search(
-            r"\b(news|search (?:the )?web|look (?:it|this|that) up online|"
-            r"latest (?:news|updates?|market)|current market)\b",
+            r"\b("
+            r"google(?:\s+search)?|search\s+google|"
+            r"search (?:the )?(?:web|online|internet)|"
+            r"look (?:it|this|that) up(?: online)?|"
+            r"news|headlines|"
+            r"latest (?:news|updates?|market|scores?)|"
+            r"current (?:market|news)|"
+            r"(?:stock|share) market|"
+            r"sensex|nifty|"
+            r"market (?:perform(?:ed|ance)?|today|today'?s)"
+            r")\b",
             text,
             re.I,
         )
