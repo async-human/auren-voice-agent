@@ -10,7 +10,7 @@ import httpx
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAddedEvent
-from livekit.agents.llm import ChatMessage
+from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
 from memory import TranscriptBuffer, distill_with_llm, fetch_context, flush_session
@@ -84,12 +84,139 @@ def _clean_assistant_text(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
+def _is_weather_request(text: str) -> bool:
+    return bool(re.search(r"\b(weather|forecast|temperature|rain(?:ing)?)\b", text, re.I))
+
+
+def _is_web_search_request(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(news|search (?:the )?web|look (?:it|this|that) up online|"
+            r"latest (?:news|updates?|market)|current market)\b",
+            text,
+            re.I,
+        )
+    )
+
+
+def _extract_location(text: str, *, allow_plain: bool = False) -> str | None:
+    patterns = (
+        r"\b(?:i (?:live|stay) in|my (?:location|city) is|location is|city is)\s+"
+        r"([A-Za-z][A-Za-z .'-]{1,60})",
+        r"\b(?:weather|forecast|temperature)(?:\s+\w+){0,3}\s+"
+        r"(?:in|for|at)\s+([A-Za-z][A-Za-z .'-]{1,60})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            candidate = re.split(r"[?!,;]|\b(?:today|now|currently)\b", match.group(1), 1)[
+                0
+            ].strip(" .")
+            if candidate:
+                return candidate
+
+    plain = text.strip(" .?!,")
+    excluded = {"why", "thanks", "thank you", "yes", "no", "okay", "ok"}
+    if (
+        allow_plain
+        and plain.lower() not in excluded
+        and 1 <= len(plain.split()) <= 4
+        and re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,60}", plain)
+    ):
+        return plain
+    return None
+
+
 class Auren(Agent):
-    def __init__(self, instructions: str, tools: list | None = None) -> None:
+    def __init__(
+        self,
+        instructions: str,
+        tools: list | None = None,
+        gateway: ToolGateway | None = None,
+        user_id: str | None = None,
+    ) -> None:
         super().__init__(
             instructions=instructions,
             tools=tools or [],
         )
+        self._gateway = gateway
+        self._user_id = user_id
+        self._awaiting_weather_location = False
+
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        """Deterministically resolve obvious live-data intents before generation."""
+        if self._gateway is None or self._user_id is None:
+            return
+
+        text = _message_text(new_message)
+        if not text:
+            return
+
+        weather_requested = _is_weather_request(text)
+        location = _extract_location(
+            text,
+            allow_plain=self._awaiting_weather_location and not weather_requested,
+        )
+        if weather_requested and location is None:
+            self._awaiting_weather_location = True
+            return
+
+        if location and (weather_requested or self._awaiting_weather_location):
+            self._awaiting_weather_location = False
+            results: list[str] = []
+            if "remember" in text.lower():
+                try:
+                    results.append(
+                        await self._gateway.invoke(
+                            "remember",
+                            self._user_id,
+                            {"content": f"Lives in {location}"},
+                        )
+                    )
+                except Exception as error:  # noqa: BLE001 - weather should still run
+                    results.append(f"remember failed: {error}")
+            try:
+                results.append(
+                    await self._gateway.invoke(
+                        "get_weather",
+                        self._user_id,
+                        {"location": location, "units": "metric"},
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - give the model the real failure
+                results.append(f"get_weather failed: {error}")
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Authoritative live tool results for this turn: "
+                    + " ".join(results)
+                    + " Answer directly from these results. Do not call the same "
+                    "tool again and do not claim it is unavailable after success."
+                ),
+            )
+            await self.update_chat_ctx(turn_ctx)
+            return
+
+        if _is_web_search_request(text):
+            try:
+                result = await self._gateway.invoke(
+                    "search_web",
+                    self._user_id,
+                    {"query": text, "max_results": 3},
+                )
+            except Exception as error:  # noqa: BLE001 - expose only tool's safe error
+                result = f"search_web failed: {error}"
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Authoritative live tool result for this turn: "
+                    f"{result} Answer from this result. Do not call search_web again "
+                    "and do not claim it is unavailable after success."
+                ),
+            )
+            await self.update_chat_ctx(turn_ctx)
 
     async def tts_node(self, text, model_settings):
         """Use Chatterbox directly and emit decoded PCM frames to LiveKit.
@@ -314,7 +441,15 @@ async def auren_session(ctx: agents.JobContext):
                 text = _clean_assistant_text(text)
             transcript.add(role, text)
 
-    await session.start(room=ctx.room, agent=Auren(instructions=instructions, tools=tools))
+    await session.start(
+        room=ctx.room,
+        agent=Auren(
+            instructions=instructions,
+            tools=tools,
+            gateway=gateway,
+            user_id=user_id,
+        ),
+    )
     await session.say(greeting, allow_interruptions=True)
 
 
