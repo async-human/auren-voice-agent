@@ -104,3 +104,32 @@ class SessionFlushResponse(BaseModel):
 
 class MemoryListResponse(BaseModel):
     memories: list[MemoryItem]
+
+
+class PageContextUpsertRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2000)
+    title: str = Field(default="", max_length=500)
+    text: str = Field(min_length=1, max_length=120_000)
+    source: str = Field(default="extension", max_length=32)
+
+
+class PageContextResponse(BaseModel):
+    present: bool
+    url: str | None = None
+    title: str | None = None
+    text: str | None = None
+    char_count: int = 0
+    truncated: bool = False
+    source: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+
+
+class PageContextMetaResponse(BaseModel):
+    present: bool
+    url: str | None = None
+    title: str | None = None
+    char_count: int = 0
+    truncated: bool = False
+    created_at: str | None = None
+    expires_at: str | None = None

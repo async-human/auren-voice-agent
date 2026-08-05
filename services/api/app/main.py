@@ -12,15 +12,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_schema, create_session_factory
-from app.routers import health, memory, tools, voice
+from app.routers import health, memory, page_context, tools, voice
 from app.security.auth import JwksCache
 from app.security.rate_limit import SlidingWindowRateLimiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("auren.api")
 
-# Large enough for a conversation transcript flush from the voice worker.
-MAX_BODY_BYTES = 256 * 1024
+# Large enough for a conversation transcript flush or an article upload.
+MAX_BODY_BYTES = 512 * 1024
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -118,7 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_origin_list,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "Authorization", "X-Auren-Service-Token"],
     )
 
@@ -127,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tools.router)
     app.include_router(memory.worker_router)
     app.include_router(memory.user_router)
+    app.include_router(page_context.router)
 
     @app.exception_handler(Exception)
     async def unhandled_error(_request: Request, error: Exception) -> JSONResponse:

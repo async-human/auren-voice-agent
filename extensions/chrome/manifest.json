@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Auren Page Reader",
+  "description": "Send the full text of the active tab to Auren so she can explain the article in voice.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Send page to Auren",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "http://localhost:8081/*",
+    "http://127.0.0.1:8081/*",
+    "https://*/*"
+  ],
+  "commands": {
+    "send-page-to-auren": {
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      },
+      "description": "Send the current page to Auren"
+    }
+  }
+}

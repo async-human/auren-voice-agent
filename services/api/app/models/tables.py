@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, Index, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -171,3 +171,23 @@ class MemoryEvent(Base):
     actor: Mapped[str] = mapped_column(String(16), default="system")
     details: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PageContext(Base):
+    """Ephemeral active-tab article text for the voice agent to explain.
+
+    One row per user. Not durable memory — TTL expires_at clears it.
+    """
+
+    __tablename__ = "page_contexts"
+    __table_args__ = (Index("ix_page_contexts_expires", "expires_at"),)
+
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    url: Mapped[str] = mapped_column(String(2000))
+    title: Mapped[str] = mapped_column(String(500))
+    text: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer, default=0)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(32), default="extension")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

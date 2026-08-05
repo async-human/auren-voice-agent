@@ -31,10 +31,18 @@ const toolLabels: Record<string, string> = {
   save_note: "Notes",
   search_notes: "Note search",
   search_web: "Web search",
+  get_page_context: "Page reader",
   check_tool_status: "Tool status",
   recall: "Memory recall",
   remember: "Memory",
   forget: "Memory",
+};
+
+type PageContextMeta = {
+  present: boolean;
+  title?: string | null;
+  url?: string | null;
+  char_count?: number;
 };
 
 function toolLabel(tool: string): string {
@@ -98,6 +106,7 @@ export default function VoiceAgent() {
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
+  const [pageContext, setPageContext] = useState<PageContextMeta | null>(null);
   const roomRef = useRef<Room | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<HTMLMediaElement[]>([]);
@@ -123,10 +132,37 @@ export default function VoiceAgent() {
     roomRef.current = null;
     setInterim(null);
     setToolActivity(null);
+    setPageContext(null);
     setIsMicMuted(false);
     setPhase("idle");
     setNotice("Session ended");
   }, []);
+
+  const refreshPageContext = useCallback(async () => {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (!apiBaseUrl) return;
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/page-context`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as PageContextMeta;
+      setPageContext(body.present ? body : null);
+    } catch {
+      // Page-context indicator is optional UI; ignore transient failures.
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    if (phase === "idle" || phase === "connecting") return;
+    void refreshPageContext();
+    const timer = setInterval(() => {
+      void refreshPageContext();
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [phase, refreshPageContext]);
 
   const startSession = useCallback(async (enableMicrophone = true) => {
     if (roomRef.current) return roomRef.current;
@@ -414,7 +450,17 @@ export default function VoiceAgent() {
                 <span>New conversation</span>
                 <h1>What’s on your mind?</h1>
                 <p>Speak naturally, or switch to typing whenever you prefer.</p>
+                {pageContext?.present && (
+                  <p className="pageContextHint">
+                    Page ready: {pageContext.title || "Shared article"}. Ask Auren to explain it.
+                  </p>
+                )}
               </div>
+            )}
+            {hasConversation && pageContext?.present && (
+              <p className="pageContextHint pageContextHintInline">
+                Shared page: {pageContext.title || "Article"}
+              </p>
             )}
             {messages.map((message) => (
               <article className={`chatMessage ${message.role}`} key={message.id}>

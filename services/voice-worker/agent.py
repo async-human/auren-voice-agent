@@ -54,9 +54,10 @@ INSTRUCTIONS = (
 )
 
 TOOL_INSTRUCTIONS = (
-    " You can check the time, look up weather, search the live web, and save or "
-    "recall the user's reminders, notes, and personal memories. Use a tool whenever "
-    "the answer depends on the current time, live data, or something the user asked "
+    " You can check the time, look up weather, search the live web, explain a page "
+    "the user shared from the browser extension, and save or recall the user's "
+    "reminders, notes, and personal memories. Use a tool whenever the answer depends "
+    "on the current time, live data, a shared page, or something the user asked "
     "you to remember; do not guess. Check the current time before scheduling anything "
     "relative to today. When the user shares a durable personal fact, call remember. "
     "When they ask you to forget something, call forget. When they ask what you "
@@ -65,11 +66,16 @@ TOOL_INSTRUCTIONS = (
     "asks whether a tool is available or working, call check_tool_status instead "
     "of guessing. For Google searches, online lookups, market news, or latest "
     "updates, always call search_web. Never say you cannot search Google or the "
-    "web when search_web is available. Tool results are authoritative: if "
-    "search_web reports success, answer from those live results and never claim "
-    "that web access is unavailable. Speak tool results conversationally instead "
-    "of reading them out verbatim, and report a failure only when the tool "
-    "explicitly reports one."
+    "web when search_web is available. When they ask you to explain, summarise, "
+    "read, or go through this page, article, or active tab, call get_page_context "
+    "and explain it naturally in your own words like a thoughtful friend — cover "
+    "the main argument, key points, and nuance; do not read the article aloud "
+    "verbatim unless asked. If no page is available, tell them to send it with "
+    "the Auren Page Reader extension. Tool results are authoritative: if "
+    "search_web or get_page_context reports success, answer from those results "
+    "and never claim that web access or the page is unavailable. Speak tool "
+    "results conversationally instead of reading them out verbatim, and report "
+    "a failure only when the tool explicitly reports one."
 )
 
 _EMOJI_RE = re.compile(
@@ -105,6 +111,24 @@ def _is_web_search_request(text: str) -> bool:
             r"sensex|nifty|"
             r"market (?:perform(?:ed|ance)?|today|today'?s)"
             r")\b",
+            text,
+            re.I,
+        )
+    )
+
+
+def _is_page_explain_request(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b("
+            r"(?:explain|summarise|summarize|read|review|walk me through|"
+            r"go through|tell me about|what(?:'s| is) .{0,40}about)"
+            r".{0,40}\b(?:this|the|my|current|active)\b.{0,20}"
+            r"\b(?:page|article|tab|post|essay|piece)\b|"
+            r"\b(?:page|article|tab)\b.{0,20}\b(?:i (?:just )?sent|i shared|from the extension)\b|"
+            r"\bactive (?:tab|page)\b|"
+            r"\bexplain (?:this|that)\b"
+            r")",
             text,
             re.I,
         )
@@ -206,6 +230,29 @@ class Auren(Agent):
                     + " ".join(results)
                     + " Answer directly from these results. Do not call the same "
                     "tool again and do not claim it is unavailable after success."
+                ),
+            )
+            await self.update_chat_ctx(turn_ctx)
+            return
+
+        if _is_page_explain_request(text):
+            try:
+                result = await self._gateway.invoke(
+                    "get_page_context",
+                    self._user_id,
+                    {},
+                )
+            except Exception as error:  # noqa: BLE001 - expose only tool's safe error
+                result = f"get_page_context failed: {error}"
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Authoritative page context for this turn: "
+                    f"{result} Explain the page naturally in your own words like a "
+                    "thoughtful friend. Cover the core idea and important points. "
+                    "Do not read it verbatim unless asked. Do not call "
+                    "get_page_context again. If no page is present, tell the user "
+                    "to send it with the Auren Page Reader extension."
                 ),
             )
             await self.update_chat_ctx(turn_ctx)

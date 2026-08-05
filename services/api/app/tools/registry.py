@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from app.tools import clock, memory, notes, reminders, weather, web_search
+from app.tools import clock, memory, notes, page_context, reminders, weather, web_search
 from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
 
 SPECS: tuple[ToolSpec, ...] = (
@@ -14,6 +14,7 @@ SPECS: tuple[ToolSpec, ...] = (
     notes.SEARCH_SPEC,
     web_search.SPEC,
     web_search.STATUS_SPEC,
+    page_context.SPEC,
     memory.RECALL_SPEC,
     memory.REMEMBER_SPEC,
     memory.FORGET_SPEC,

@@ -700,6 +700,17 @@ button, input { font: inherit; }
   opacity: 0;
   animation: fadeUp 0.9s 1.05s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
 }
+.pageContextHint {
+  margin: 1rem 0 0;
+  color: var(--warm-dim);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+.pageContextHintInline {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
 .toolActivitySlot {
   display: grid;
   min-height: 24px;

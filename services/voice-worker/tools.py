@@ -24,7 +24,7 @@ class ToolGateway:
         self,
         base_url: str,
         token: str | None,
-        timeout: float = 20.0,
+        timeout: float = 45.0,
         on_event: ToolEventHandler | None = None,
     ) -> None:
         headers = {"Content-Type": "application/json"}
@@ -189,6 +189,17 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         )
 
     @function_tool
+    async def get_page_context() -> str:
+        """Load the article or page the user sent from the Auren browser extension.
+
+        Use this whenever they ask you to explain, summarise, read, or go through
+        the current page, article, or active tab. Explain conversationally from
+        the extracted text; do not claim you cannot see the page if this tool
+        returns content.
+        """
+        return await gateway.invoke("get_page_context", user_id, {})
+
+    @function_tool
     async def check_tool_status(tool: Literal["web_search"] = "web_search") -> str:
         """Dynamically check whether a tool is currently available.
 
@@ -237,6 +248,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         save_note,
         search_notes,
         search_web,
+        get_page_context,
         check_tool_status,
         recall,
         remember,
