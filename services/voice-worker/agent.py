@@ -9,7 +9,7 @@ import av
 import httpx
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAddedEvent
+from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAddedEvent, room_io
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
@@ -386,25 +386,33 @@ class Auren(Agent):
             return
 
         base_url = CHATTERBOX_BASE_URL
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{base_url}/audio/speech",
-                json={
-                    "model": CHATTERBOX_MODEL,
-                    "input": spoken_text,
-                    "voice": CHATTERBOX_VOICE,
-                    "response_format": "mp3",
-                },
-            )
-            if response.is_error:
-                logging.error(
-                    "Chatterbox TTS failed (%s): %s",
-                    response.status_code,
-                    response.text[:500],
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(
+                    f"{base_url}/audio/speech",
+                    json={
+                        "model": CHATTERBOX_MODEL,
+                        "input": spoken_text,
+                        "voice": CHATTERBOX_VOICE,
+                        "response_format": "mp3",
+                    },
                 )
-                response.raise_for_status()
+                if response.is_error:
+                    logging.error(
+                        "Chatterbox TTS failed (%s): %s",
+                        response.status_code,
+                        response.text[:500],
+                    )
+                    return
+                audio_bytes = response.content
+        except Exception:
+            logging.exception(
+                "Chatterbox TTS request failed (model=%s); continuing without audio",
+                CHATTERBOX_MODEL,
+            )
+            return
 
-        container = av.open(io.BytesIO(response.content))
+        container = av.open(io.BytesIO(audio_bytes))
         resampler = av.AudioResampler(format="s16", layout="mono", rate=24000)
 
         for decoded_frame in container.decode(audio=0):
@@ -598,6 +606,25 @@ async def auren_session(ctx: agents.JobContext):
         screen_reader=screen_reader,
     )
 
+    async def publish_transcript(role: str, text: str) -> None:
+        """Reliable UI path for finals — lk.transcription identity is often wrong."""
+        try:
+            payload = json.dumps(
+                {
+                    "type": "transcript",
+                    "role": role,
+                    "text": text,
+                    "final": True,
+                }
+            ).encode("utf-8")
+            await ctx.room.local_participant.publish_data(
+                payload,
+                reliable=True,
+                topic="auren.transcript",
+            )
+        except Exception:
+            logging.exception("Failed to publish %s transcript to UI", role)
+
     @session.on("conversation_item_added")
     def _on_conversation_item(event: ConversationItemAddedEvent) -> None:
         item = event.item
@@ -611,20 +638,29 @@ async def auren_session(ctx: agents.JobContext):
             if role == "assistant":
                 text = _clean_assistant_text(text)
             transcript.add(role, text)
+            asyncio.create_task(publish_transcript(role, text))
 
     await session.start(
         room=ctx.room,
         agent=agent,
+        # Deliver assistant/user text immediately. Syncing to TTS audio makes the
+        # UI look stuck on "thinking" whenever Chatterbox is slow or down.
+        room_options=room_io.RoomOptions(
+            text_output=room_io.TextOutputOptions(sync_transcription=False),
+        ),
     )
-    # Never let greeting TTS take down the whole session — otherwise the room
-    # stays connected while STT/LLM die with the crashed agent job.
-    try:
-        await session.say(greeting, allow_interruptions=True)
-    except Exception:
-        logging.exception(
-            "Greeting TTS failed (model=%s). Session continues so the user can still talk.",
-            CHATTERBOX_MODEL,
-        )
+
+    async def _speak_greeting() -> None:
+        try:
+            await session.say(greeting, allow_interruptions=True)
+        except Exception:
+            logging.exception(
+                "Greeting TTS failed (model=%s). Session continues so the user can still talk.",
+                CHATTERBOX_MODEL,
+            )
+
+    # Never block the session on greeting audio.
+    asyncio.create_task(_speak_greeting())
 
 
 if __name__ == "__main__":

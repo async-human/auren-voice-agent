@@ -247,7 +247,98 @@ export default function VoiceAgent() {
         });
       });
 
+      const commitTranscription = (role: Message["role"], rawText: string) => {
+        const text =
+          role === "assistant" ? cleanAssistantText(rawText) : rawText.trim();
+        if (!text) return;
+
+        setMessages((current) => {
+          const last = current.at(-1);
+          // Typed sends already insert the user bubble; skip the stream echo.
+          if (
+            role === "user" &&
+            last?.role === "user" &&
+            last.text.trim() === text
+          ) {
+            return current;
+          }
+          return [...current, { id: nextId.current++, role, text }];
+        });
+        setInterim(null);
+        setPhase(role === "user" ? "thinking" : "listening");
+        if (role === "assistant") {
+          setNotice("Just stop talking when you’re done");
+        }
+      };
+
+      const localIdentity = () => room.localParticipant.identity;
+
+      const isLocalMicTrack = (trackId: string | undefined) => {
+        if (!trackId) return false;
+        for (const publication of room.localParticipant.trackPublications.values()) {
+          if (
+            publication.trackSid === trackId ||
+            publication.track?.sid === trackId
+          ) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const resolveTranscriptRole = (
+        participantIdentity: string | undefined,
+        attrs: Record<string, string>,
+      ): Message["role"] => {
+        // Agents often publish user STT with the agent identity. Prefer track /
+        // on-behalf attributes over the stream sender identity.
+        const onBehalf = attrs["lk.publish_on_behalf"];
+        if (onBehalf && onBehalf === localIdentity()) return "user";
+
+        const transcribedTrack =
+          attrs["lk.transcribed_track_id"] || attrs["transcribed_track_id"];
+        if (isLocalMicTrack(transcribedTrack)) return "user";
+
+        if (participantIdentity && participantIdentity === localIdentity()) {
+          return "user";
+        }
+        return "assistant";
+      };
+
       room.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+        if (topic === "auren.transcript") {
+          try {
+            const event = JSON.parse(new TextDecoder().decode(payload)) as {
+              type?: string;
+              role?: Message["role"];
+              text?: string;
+              final?: boolean;
+            };
+            if (
+              event.type !== "transcript" ||
+              (event.role !== "user" && event.role !== "assistant") ||
+              typeof event.text !== "string"
+            ) {
+              return;
+            }
+            if (event.final === false) {
+              const text =
+                event.role === "assistant"
+                  ? cleanAssistantText(event.text)
+                  : event.text.trim();
+              if (text) {
+                setInterim({ role: event.role, text });
+                if (event.role === "user") setPhase("listening");
+              }
+              return;
+            }
+            commitTranscription(event.role, event.text);
+          } catch {
+            // Ignore malformed transcript packets.
+          }
+          return;
+        }
+
         if (topic !== "auren.tool") return;
         try {
           const event = JSON.parse(new TextDecoder().decode(payload)) as Partial<ToolActivity> & {
@@ -286,11 +377,37 @@ export default function VoiceAgent() {
         }
       });
 
+      // Agents publish STT + replies on the lk.transcription text stream.
+      // TranscriptionReceived is deprecated and no longer fires for AgentSession.
+      room.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
+        try {
+          const message = await reader.readAll();
+          const attrs = (reader.info.attributes ?? {}) as Record<string, string>;
+          const finalFlag = attrs["lk.transcription_final"];
+          // Missing flag = treat as final so agent text-only replies still land.
+          const isFinal = !(finalFlag === false || finalFlag === "false");
+          const role = resolveTranscriptRole(participantInfo.identity, attrs);
+          const text =
+            role === "assistant" ? cleanAssistantText(message) : message.trim();
+          if (!text) return;
+
+          if (!isFinal) {
+            setInterim({ role, text });
+            if (role === "user") setPhase("listening");
+            return;
+          }
+          commitTranscription(role, text);
+        } catch (error) {
+          console.error("Failed to read lk.transcription stream", error);
+        }
+      });
+
+      // Legacy fallback for older agent builds that still emit track transcriptions.
       room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
-        const role =
-          participant?.identity === room.localParticipant.identity
-            ? "user"
-            : "assistant";
+        const trackId = segments.find((segment) => segment.trackSid)?.trackSid;
+        const role = resolveTranscriptRole(participant?.identity, {
+          "lk.transcribed_track_id": trackId ?? "",
+        });
         const partialText = segments
           .filter((segment) => !segment.final)
           .map((segment) => segment.text)
@@ -298,23 +415,18 @@ export default function VoiceAgent() {
           .trim();
         const partial =
           role === "assistant" ? cleanAssistantText(partialText) : partialText;
-        setInterim(partial ? { role, text: partial } : null);
+        if (partial) {
+          setInterim({ role, text: partial });
+          if (role === "user") setPhase("listening");
+        }
 
         const receivedText = segments
           .filter((segment) => segment.final)
           .map((segment) => segment.text)
           .join(" ")
           .trim();
-        const finalText =
-          role === "assistant" ? cleanAssistantText(receivedText) : receivedText;
-        if (!finalText) return;
-
-        setMessages((current) => [
-          ...current,
-          { id: nextId.current++, role, text: finalText },
-        ]);
-        setInterim(null);
-        setPhase(role === "user" ? "thinking" : "listening");
+        if (!receivedText) return;
+        commitTranscription(role, receivedText);
       });
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
