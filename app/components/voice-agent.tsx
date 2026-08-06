@@ -225,7 +225,8 @@ export default function VoiceAgent() {
         );
       }
 
-      const room = new Room({ adaptiveStream: true, dynacast: true });
+      // dynacast can pause publishing when subscribers flap; keep mic audio always on.
+      const room = new Room({ adaptiveStream: true, dynacast: false });
       roomRef.current = room;
 
       room.on(RoomEvent.TrackSubscribed, (track) => {
@@ -430,10 +431,17 @@ export default function VoiceAgent() {
       });
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        const localSpeaking = speakers.some(
+          (speaker) => speaker.identity === room.localParticipant.identity,
+        );
         const agentIsSpeaking = speakers.some(
           (speaker) => speaker.identity !== room.localParticipant.identity,
         );
-        if (agentIsSpeaking) setPhase("speaking");
+        if (agentIsSpeaking) {
+          setPhase("speaking");
+        } else if (localSpeaking && !voiceMutedRef.current) {
+          setNotice("Hearing you…");
+        }
       });
 
       room.on(RoomEvent.ParticipantDisconnected, (participant) => {
@@ -555,7 +563,8 @@ export default function VoiceAgent() {
     setIsTypeOpen(nextOpen);
     if (nextOpen && !roomRef.current) {
       setFailure(null);
-      await startSession(false);
+      // Keep the mic on so speech still works while the type box is open.
+      await startSession(true);
     }
   }, [isTypeOpen, startSession]);
 
@@ -806,6 +815,11 @@ export default function VoiceAgent() {
             <p className="failure" role="alert">
               <span className="failureIcon" aria-hidden="true">!</span>
               {failure}
+            </p>
+          ) : isMicMuted && phase !== "idle" && phase !== "connecting" ? (
+            <p className="failure" role="status">
+              <span className="failureIcon" aria-hidden="true">!</span>
+              Microphone is off — tap the mic button, then speak.
             </p>
           ) : (
             <p className="tip">{notice}</p>

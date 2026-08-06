@@ -9,7 +9,14 @@ import av
 import httpx
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import Agent, AgentServer, AgentSession, ConversationItemAddedEvent, room_io
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    ConversationItemAddedEvent,
+    UserInputTranscribedEvent,
+    room_io,
+)
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
@@ -572,8 +579,7 @@ async def auren_session(ctx: agents.JobContext):
 
     session = AgentSession(
         vad=silero.VAD.load(),
-        # Match the known-good Speaches setup: REST Whisper with plugin defaults.
-        # Do not enable realtime/websocket STT — Speaches only exposes /audio/transcriptions.
+        # Speaches only exposes REST /audio/transcriptions — never realtime WS.
         stt=openai.STT(
             model=os.getenv(
                 "FASTER_WHISPER_MODEL",
@@ -581,6 +587,8 @@ async def auren_session(ctx: agents.JobContext):
             ),
             base_url=FASTER_WHISPER_BASE_URL,
             api_key="local",
+            language="en",
+            use_realtime=False,
         ),
         llm=openai.LLM(
             model=LLM_MODEL,
@@ -606,15 +614,17 @@ async def auren_session(ctx: agents.JobContext):
         screen_reader=screen_reader,
     )
 
-    async def publish_transcript(role: str, text: str) -> None:
-        """Reliable UI path for finals — lk.transcription identity is often wrong."""
+    async def publish_transcript(
+        role: str, text: str, *, final: bool = True
+    ) -> None:
+        """Reliable UI path — lk.transcription often mis-labels the speaker."""
         try:
             payload = json.dumps(
                 {
                     "type": "transcript",
                     "role": role,
                     "text": text,
-                    "final": True,
+                    "final": final,
                 }
             ).encode("utf-8")
             await ctx.room.local_participant.publish_data(
@@ -624,6 +634,20 @@ async def auren_session(ctx: agents.JobContext):
             )
         except Exception:
             logging.exception("Failed to publish %s transcript to UI", role)
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_transcribed(event: UserInputTranscribedEvent) -> None:
+        text = (event.transcript or "").strip()
+        if not text:
+            return
+        logging.info(
+            "STT user_input_transcribed final=%s text=%r",
+            event.is_final,
+            text[:160],
+        )
+        asyncio.create_task(
+            publish_transcript("user", text, final=event.is_final)
+        )
 
     @session.on("conversation_item_added")
     def _on_conversation_item(event: ConversationItemAddedEvent) -> None:
@@ -638,7 +662,9 @@ async def auren_session(ctx: agents.JobContext):
             if role == "assistant":
                 text = _clean_assistant_text(text)
             transcript.add(role, text)
-            asyncio.create_task(publish_transcript(role, text))
+            # User finals are already pushed from user_input_transcribed.
+            if role == "assistant":
+                asyncio.create_task(publish_transcript(role, text, final=True))
 
     await session.start(
         room=ctx.room,
@@ -646,6 +672,8 @@ async def auren_session(ctx: agents.JobContext):
         # Deliver assistant/user text immediately. Syncing to TTS audio makes the
         # UI look stuck on "thinking" whenever Chatterbox is slow or down.
         room_options=room_io.RoomOptions(
+            audio_input=True,
+            text_input=True,
             text_output=room_io.TextOutputOptions(sync_transcription=False),
         ),
     )
