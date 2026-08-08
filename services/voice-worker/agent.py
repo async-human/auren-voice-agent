@@ -1,9 +1,11 @@
 import asyncio
+from collections.abc import AsyncIterable, AsyncIterator
 import io
 import json
 import logging
 import os
 import re
+import time
 
 import av
 import httpx
@@ -15,6 +17,7 @@ from livekit.agents import (
     AgentSession,
     ConversationItemAddedEvent,
     UserInputTranscribedEvent,
+    inference,
     room_io,
 )
 from livekit.agents.llm import ChatContext, ChatMessage
@@ -52,6 +55,15 @@ LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
 CHATTERBOX_MODEL = os.getenv("CHATTERBOX_MODEL", "chatterbox-turbo")
 CHATTERBOX_VOICE = os.getenv("CHATTERBOX_VOICE", "Olivia.wav")
+CHATTERBOX_TIMEOUT_SECONDS = max(
+    10.0, float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "90"))
+)
+CHATTERBOX_MAX_SEGMENT_CHARS = max(
+    60, int(os.getenv("CHATTERBOX_MAX_SEGMENT_CHARS", "180"))
+)
+CHATTERBOX_RETRY_ATTEMPTS = max(
+    1, int(os.getenv("CHATTERBOX_RETRY_ATTEMPTS", "2"))
+)
 
 TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
 TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
@@ -105,6 +117,67 @@ def _clean_assistant_text(text: str) -> str:
     cleaned = _EMOJI_RE.sub("", text)
     cleaned = re.sub(r"\s+([,.;!?])", r"\1", cleaned)
     return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+
+async def _iter_tts_segments(text: AsyncIterable[str]) -> AsyncIterator[str]:
+    """Yield sentence-sized text so Chatterbox can begin before the LLM finishes."""
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+        while buffer:
+            sentence = re.search(r"(?<=[.!?])(?:\s+|$)", buffer)
+            if sentence and sentence.end() <= CHATTERBOX_MAX_SEGMENT_CHARS:
+                split_at = sentence.end()
+            elif len(buffer) >= CHATTERBOX_MAX_SEGMENT_CHARS:
+                split_at = buffer.rfind(" ", 0, CHATTERBOX_MAX_SEGMENT_CHARS + 1)
+                if split_at <= 0:
+                    split_at = CHATTERBOX_MAX_SEGMENT_CHARS
+            else:
+                break
+
+            segment = _clean_assistant_text(buffer[:split_at])
+            buffer = buffer[split_at:].lstrip()
+            if segment:
+                yield segment
+
+    final = _clean_assistant_text(buffer)
+    if final:
+        yield final
+
+
+def _decode_audio_frames(audio_bytes: bytes) -> list[rtc.AudioFrame]:
+    """Decode encoded Chatterbox audio into LiveKit's mono 24 kHz PCM boundary."""
+    frames: list[rtc.AudioFrame] = []
+    container = av.open(io.BytesIO(audio_bytes))
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=24000)
+
+    for decoded_frame in container.decode(audio=0):
+        for frame in resampler.resample(decoded_frame):
+            pcm = frame.to_ndarray().tobytes()
+            if not pcm:
+                continue
+            frames.append(
+                rtc.AudioFrame(
+                    data=pcm,
+                    sample_rate=24000,
+                    num_channels=1,
+                    samples_per_channel=len(pcm) // 2,
+                )
+            )
+
+    for frame in resampler.resample(None):
+        pcm = frame.to_ndarray().tobytes()
+        if not pcm:
+            continue
+        frames.append(
+            rtc.AudioFrame(
+                data=pcm,
+                sample_rate=24000,
+                num_channels=1,
+                samples_per_channel=len(pcm) // 2,
+            )
+        )
+    return frames
 
 
 def _is_weather_request(text: str) -> bool:
@@ -390,62 +463,102 @@ class Auren(Agent):
         responses are not decoded correctly by some LiveKit OpenAI plugin versions.
         This node deliberately owns the decoding boundary.
         """
-        parts: list[str] = []
-        async for chunk in text:
-            parts.append(chunk)
+        timeout = httpx.Timeout(CHATTERBOX_TIMEOUT_SECONDS, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async for spoken_text in _iter_tts_segments(text):
+                started_at = time.monotonic()
+                audio_bytes: bytes | None = None
+                last_error = "unknown error"
+                for attempt in range(1, CHATTERBOX_RETRY_ATTEMPTS + 1):
+                    try:
+                        response = await client.post(
+                            f"{CHATTERBOX_BASE_URL}/audio/speech",
+                            json={
+                                "model": CHATTERBOX_MODEL,
+                                "input": spoken_text,
+                                "voice": CHATTERBOX_VOICE,
+                                # WAV avoids an unnecessary lossy encode/decode hop.
+                                "response_format": "wav",
+                            },
+                        )
+                        if response.is_error:
+                            last_error = f"HTTP {response.status_code}"
+                            logging.error(
+                                "Chatterbox TTS failed attempt=%d status=%s body=%s",
+                                attempt,
+                                response.status_code,
+                                response.text[:500],
+                            )
+                            if response.status_code < 500 and response.status_code != 429:
+                                break
+                        elif not response.headers.get("content-type", "").startswith(
+                            "audio/"
+                        ):
+                            last_error = "non-audio response"
+                            logging.error(
+                                "Chatterbox TTS returned non-audio content type %s",
+                                response.headers.get("content-type"),
+                            )
+                            break
+                        elif len(response.content) < 128:
+                            last_error = "undersized audio response"
+                            logging.error(
+                                "Chatterbox TTS returned an empty/undersized payload"
+                            )
+                            break
+                        else:
+                            audio_bytes = response.content
+                            break
+                    except Exception as error:
+                        last_error = type(error).__name__
+                        logging.exception(
+                            "Chatterbox TTS request failed attempt=%d model=%s",
+                            attempt,
+                            CHATTERBOX_MODEL,
+                        )
 
-        spoken_text = _clean_assistant_text("".join(parts))
-        if not spoken_text:
-            return
+                    if attempt < CHATTERBOX_RETRY_ATTEMPTS:
+                        await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
 
-        base_url = CHATTERBOX_BASE_URL
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.post(
-                    f"{base_url}/audio/speech",
-                    json={
-                        "model": CHATTERBOX_MODEL,
-                        "input": spoken_text,
-                        "voice": CHATTERBOX_VOICE,
-                        "response_format": "mp3",
-                    },
-                )
-                if response.is_error:
+                if audio_bytes is None:
                     logging.error(
-                        "Chatterbox TTS failed (%s): %s",
-                        response.status_code,
-                        response.text[:500],
+                        "Chatterbox produced no audio after %d attempt(s); text_chars=%d",
+                        CHATTERBOX_RETRY_ATTEMPTS,
+                        len(spoken_text),
                     )
-                    return
-                audio_bytes = response.content
-        except Exception:
-            logging.exception(
-                "Chatterbox TTS request failed (model=%s); continuing without audio",
-                CHATTERBOX_MODEL,
-            )
-            return
+                    raise RuntimeError(
+                        "Chatterbox TTS failed after "
+                        f"{CHATTERBOX_RETRY_ATTEMPTS} attempt(s): {last_error}"
+                    )
 
-        container = av.open(io.BytesIO(audio_bytes))
-        resampler = av.AudioResampler(format="s16", layout="mono", rate=24000)
+                try:
+                    frames = _decode_audio_frames(audio_bytes)
+                except Exception as error:
+                    logging.exception(
+                        "Failed to decode Chatterbox audio; text_chars=%d",
+                        len(spoken_text),
+                    )
+                    raise RuntimeError("Chatterbox returned invalid audio") from error
 
-        for decoded_frame in container.decode(audio=0):
-            for frame in resampler.resample(decoded_frame):
-                pcm = frame.to_ndarray().tobytes()
-                yield rtc.AudioFrame(
-                    data=pcm,
-                    sample_rate=24000,
-                    num_channels=1,
-                    samples_per_channel=len(pcm) // 2,
+                if not frames:
+                    logging.error(
+                        "Chatterbox payload decoded to zero PCM frames; text_chars=%d",
+                        len(spoken_text),
+                    )
+                    raise RuntimeError("Chatterbox returned audio with no PCM frames")
+
+                audio_seconds = sum(
+                    frame.samples_per_channel / frame.sample_rate for frame in frames
                 )
-
-        for frame in resampler.resample(None):
-            pcm = frame.to_ndarray().tobytes()
-            yield rtc.AudioFrame(
-                data=pcm,
-                sample_rate=24000,
-                num_channels=1,
-                samples_per_channel=len(pcm) // 2,
-            )
+                logging.info(
+                    "TTS segment ready chars=%d request_seconds=%.3f audio_seconds=%.3f frames=%d",
+                    len(spoken_text),
+                    time.monotonic() - started_at,
+                    audio_seconds,
+                    len(frames),
+                )
+                for frame in frames:
+                    yield frame
 
 
 server = AgentServer()
@@ -594,6 +707,17 @@ async def auren_session(ctx: agents.JobContext):
 
     session = AgentSession(
         vad=silero.VAD.load(),
+        turn_handling={
+            # Keep endpointing local and deterministic on RunPod. The audio model
+            # understands completed thoughts better than VAD-only silence timers.
+            "turn_detection": inference.TurnDetector(version="v1-mini"),
+            "endpointing": {"mode": "dynamic", "min_delay": 0.3, "max_delay": 2.5},
+            "interruption": {
+                "resume_false_interruption": True,
+                "false_interruption_timeout": 2.0,
+            },
+            "preemptive_generation": {"enabled": True, "preemptive_tts": False},
+        },
         # Speaches only exposes REST /audio/transcriptions — never realtime WS.
         stt=openai.STT(
             model=os.getenv(
@@ -617,7 +741,7 @@ async def auren_session(ctx: agents.JobContext):
             voice=CHATTERBOX_VOICE,
             base_url=CHATTERBOX_BASE_URL,
             api_key="local",
-            response_format="mp3",
+            response_format="wav",
         ),
     )
 

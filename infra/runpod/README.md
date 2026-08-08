@@ -78,7 +78,22 @@ The readiness endpoint becomes HTTP 200 only after:
 - Speaches is healthy and the Whisper model is cached
 - Ollama has pulled and warmed Qwen
 - Chatterbox has loaded successfully
+- Chatterbox synthesizes a valid, non-silent WAV and Speaches transcribes it
 - the LiveKit worker is running
+
+The active audio check runs once during bootstrap and stores its measured TTS
+latency, STT latency, WAV properties, and transcript in
+`/workspace/runtime/audio-smoke.json`. Inspect or rerun it with:
+
+```bash
+python /opt/auren/bin/audio_smoke_test.py
+curl -sS http://127.0.0.1:9090/health/ready | python -m json.tool
+```
+
+A passing startup check proves that the local model servers can complete a
+TTS-to-STT round trip. Before promoting an image, also complete one browser
+microphone test through LiveKit to verify capture permissions, room routing,
+turn handling, and speaker playback end to end.
 
 ## Idle shutdown
 

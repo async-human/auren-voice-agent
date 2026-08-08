@@ -76,3 +76,7 @@ jobs:
         run: >-
           uv run python -m py_compile
           agent.py tools.py memory.py screen_reader.py session_state.py
+          ../../infra/runpod/scripts/audio_smoke_test.py
+      - name: Run voice worker unit tests
+        working-directory: services/voice-worker
+        run: uv run python -m unittest discover -s tests -v

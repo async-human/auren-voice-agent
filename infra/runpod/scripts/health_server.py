@@ -44,6 +44,17 @@ def active_sessions() -> int:
     return int(payload.get("active_sessions", 0))
 
 
+def audio_smoke() -> tuple[bool, dict[str, object]]:
+    path = Path(
+        os.getenv("AUREN_AUDIO_SMOKE_FILE", "/workspace/runtime/audio-smoke.json")
+    )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError) as error:
+        return False, {"status": "missing", "detail": type(error).__name__}
+    return payload.get("status") == "passed", payload
+
+
 def readiness() -> tuple[bool, dict[str, object]]:
     checks: dict[str, tuple[bool, str]] = {
         "speaches": http_ok("http://127.0.0.1:8000/health"),
@@ -52,11 +63,13 @@ def readiness() -> tuple[bool, dict[str, object]]:
         "voice_worker": process_ok("voice-worker"),
     }
     marker = Path("/workspace/runtime/models-ready").is_file()
-    ready = marker and all(value[0] for value in checks.values())
+    audio_ready, audio_result = audio_smoke()
+    ready = marker and audio_ready and all(value[0] for value in checks.values())
     return ready, {
         "status": "ready" if ready else "starting",
         "models_ready": marker,
         "active_sessions": active_sessions(),
+        "audio_smoke": audio_result,
         "checks": {
             name: {"ok": value[0], "detail": value[1]} for name, value in checks.items()
         },
