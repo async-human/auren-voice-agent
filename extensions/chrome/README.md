@@ -9,7 +9,7 @@ relying on screenshots.
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. **Load unpacked** → select this folder (`extensions/chrome`)
-4. Open the extension options and confirm API base URL (`http://127.0.0.1:8081` for local)
+4. Open the extension options and confirm API base URL (`http://127.0.0.1:8080` for local)
 
 ## Use
 
