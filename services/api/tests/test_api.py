@@ -120,9 +120,23 @@ async def test_tool_listing_exposes_expected_tools(client: AsyncClient) -> None:
         "search_notes",
         "search_web",
         "check_tool_status",
+        "get_page_context",
         "recall",
         "remember",
         "forget",
+        "list_calendar_events",
+        "find_free_slots",
+        "create_calendar_event",
+        "search_emails",
+        "draft_email",
+        "send_email",
+        "list_pending_actions",
+        "confirm_pending_action",
+        "reject_pending_action",
+        "start_workflow",
+        "update_workflow",
+        "complete_workflow",
+        "schedule_followup",
     }
 
 
