@@ -23,25 +23,25 @@ class ListPendingArgs(BaseModel):
     limit: int = Field(default=5, ge=1, le=20)
 
 
-async def confirm_pending_action(context: ToolContext, args: ConfirmArgs) -> ToolResult:
-    action = await approvals.get_pending(
-        context.session, context.user_id, action_id=args.action_id
+async def execute_pending_action(
+    context: ToolContext,
+    *,
+    action_id: str | None = None,
+    actor: str = "user",
+) -> ToolResult:
+    action = await approvals.claim_pending(
+        context.session,
+        context.user_id,
+        action_id=action_id,
+        actor=actor,
     )
     if action is None:
-        raise ToolError("There is no pending action to confirm.")
-
-    await approvals.resolve_action(
-        context.session,
-        action,
-        status="confirmed",
-        actor="user",
-        result_summary="User confirmed",
-    )
-    # Re-load as confirmed then execute underlying tool without re-proposing.
-    try:
-        result = await registry.execute_handler(
-            context, action.tool, action.arguments
+        raise ToolError(
+            "There is no pending action to confirm, or it is already being processed."
         )
+
+    try:
+        result = await registry.execute_handler(context, action.tool, action.arguments)
     except Exception as error:  # noqa: BLE001
         await approvals.resolve_action(
             context.session,
@@ -52,19 +52,12 @@ async def confirm_pending_action(context: ToolContext, args: ConfirmArgs) -> Too
         )
         raise ToolError(f"Confirmed, but execution failed: {error}") from error
 
-    action.status = "executed"
-    action.result_summary = result.summary
-    await context.session.commit()
-    await approvals.record_audit(
+    await approvals.resolve_action(
         context.session,
-        user_id=context.user_id,
-        tool=action.tool,
-        event_type="executed",
+        action,
+        status="executed",
         actor="system",
-        arguments=action.arguments,
-        pending_action_id=action.id,
-        summary=result.summary,
-        details=result.data,
+        result_summary=result.summary,
     )
     await approvals.record_audit(
         context.session,
@@ -81,6 +74,13 @@ async def confirm_pending_action(context: ToolContext, args: ConfirmArgs) -> Too
         data={"action_id": action.id, "tool": action.tool, **(result.data or {})},
     )
 
+
+async def confirm_pending_action(context: ToolContext, args: ConfirmArgs) -> ToolResult:
+    return await execute_pending_action(
+        context,
+        action_id=args.action_id,
+        actor="user",
+    )
 
 async def reject_pending_action(context: ToolContext, args: RejectArgs) -> ToolResult:
     action = await approvals.get_pending(
