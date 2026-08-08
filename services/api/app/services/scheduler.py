@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timezone
+from datetime import timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.db import create_session_factory
-from app.models.tables import Reminder, ScheduledJob, utcnow
+from app.models.tables import Reminder, ScheduledJob, WorkflowRun, utcnow
 
 logger = logging.getLogger("auren.scheduler")
 
@@ -25,36 +25,83 @@ def _as_utc(value):
 async def process_due_work(session_factory) -> None:
     async with session_factory() as session:
         now = utcnow()
-        reminders = (
-            await session.scalars(
-                select(Reminder).where(
-                    Reminder.status == "pending",
-                    Reminder.due_at.is_not(None),
-                )
+        reminder_result = await session.execute(
+            update(Reminder)
+            .where(
+                Reminder.status == "pending",
+                Reminder.due_at.is_not(None),
+                Reminder.due_at <= now,
             )
-        ).all()
-        fired = 0
-        for reminder in reminders:
-            due = _as_utc(reminder.due_at)
-            if due is not None and due <= now:
-                reminder.status = "due"
-                fired += 1
+            .values(status="due")
+            .execution_options(synchronize_session=False)
+        )
+        fired = reminder_result.rowcount or 0
 
         jobs = (
             await session.scalars(
-                select(ScheduledJob).where(
+                select(ScheduledJob)
+                .where(
                     ScheduledJob.status == "scheduled",
                     ScheduledJob.run_at <= now,
-                ).limit(20)
+                )
+                .order_by(ScheduledJob.run_at)
+                .limit(20)
             )
         ).all()
+        delivered = 0
         for job in jobs:
-            job.status = "completed"
-            job.completed_at = now
-            job.attempts += 1
-            # Payload is retained for the UI / next voice session to pick up.
+            message = str((job.payload or {}).get("message") or "").strip()
+            if not message:
+                job.attempts += 1
+                job.last_error = "Scheduled job payload has no message."
+                if job.attempts >= 3:
+                    job.status = "failed"
+                else:
+                    job.run_at = now + timedelta(minutes=job.attempts)
+                continue
+
+            claim = await session.execute(
+                update(ScheduledJob)
+                .where(
+                    ScheduledJob.id == job.id,
+                    ScheduledJob.status == "scheduled",
+                )
+                .values(
+                    status="completed",
+                    completed_at=now,
+                    attempts=ScheduledJob.attempts + 1,
+                    last_error=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if claim.rowcount != 1:
+                continue
+
+            session.add(
+                Reminder(
+                    user_id=job.user_id,
+                    title=message,
+                    notes=f"Delivered from scheduled {job.job_type} job {job.id}.",
+                    due_at=now,
+                    timezone_name="UTC",
+                    status="due",
+                )
+            )
+            if job.workflow_run_id:
+                workflow = await session.get(WorkflowRun, job.workflow_run_id)
+                if workflow is not None and workflow.user_id == job.user_id:
+                    context = dict(workflow.context or {})
+                    delivered_jobs = list(context.get("delivered_job_ids") or [])
+                    if job.id not in delivered_jobs:
+                        delivered_jobs.append(job.id)
+                    context["delivered_job_ids"] = delivered_jobs[-50:]
+                    workflow.context = context
+                    if workflow.status not in {"completed", "failed", "cancelled"}:
+                        workflow.status = "awaiting_input"
+
+            delivered += 1
             logger.info(
-                "Completed scheduled job %s type=%s user=%s",
+                "Delivered scheduled job %s type=%s user=%s",
                 job.id,
                 job.job_type,
                 job.user_id,
@@ -62,8 +109,11 @@ async def process_due_work(session_factory) -> None:
 
         if fired or jobs:
             await session.commit()
-            logger.info("Scheduler fired reminders=%s jobs=%s", fired, len(jobs))
-
+            logger.info(
+                "Scheduler fired reminders=%s delivered_jobs=%s",
+                fired,
+                delivered,
+            )
 
 async def scheduler_loop(app) -> None:
     settings = app.state.settings
