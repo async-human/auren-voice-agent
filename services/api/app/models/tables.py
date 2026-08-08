@@ -231,7 +231,7 @@ class PendingAction(Base):
     preview: Mapped[str] = mapped_column(Text)
     confirm_token: Mapped[str] = mapped_column(String(64))
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|confirmed|rejected|expired|executed
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|executing|rejected|expired|executed|failed
     workflow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
