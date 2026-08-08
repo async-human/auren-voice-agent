@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # Google OAuth for Calendar + Gmail (credentials stay on the API host).
     google_client_id: str | None = None
     google_client_secret: str | None = None
-    google_redirect_uri: str = "http://localhost:8081/v1/connections/google/callback"
+    google_redirect_uri: str = "http://localhost:8080/v1/connections/google/callback"
     public_app_url: str = "http://localhost:3000"
     token_encryption_key: str | None = None
     scheduler_enabled: bool = True
