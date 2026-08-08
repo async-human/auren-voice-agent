@@ -220,24 +220,6 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         )
 
     @function_tool
-    async def confirm_pending_action(action_id: str | None = None) -> str:
-        """Confirm and execute the pending consequential action."""
-        return await gateway.invoke(
-            "confirm_pending_action", user_id, {"action_id": action_id}
-        )
-
-    @function_tool
-    async def reject_pending_action(
-        action_id: str | None = None, reason: str | None = None
-    ) -> str:
-        """Reject a pending consequential action."""
-        return await gateway.invoke(
-            "reject_pending_action",
-            user_id,
-            {"action_id": action_id, "reason": reason},
-        )
-
-    @function_tool
     async def list_pending_actions(limit: int = 5) -> str:
         """List actions waiting for confirmation."""
         return await gateway.invoke(
@@ -401,8 +383,6 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         search_emails,
         draft_email,
         send_email,
-        confirm_pending_action,
-        reject_pending_action,
         list_pending_actions,
         start_workflow,
         update_workflow,
