@@ -9,7 +9,7 @@ export function LandingNavLink() {
   if (isSignedIn) {
     return (
       <Link className="leave" href="/talk">
-        Open studio
+        Open Auren
       </Link>
     );
   }
@@ -32,7 +32,7 @@ export function LandingPrimaryCta() {
     return (
       <Link className="landingPrimary" href="/talk">
         <span className="pip" />
-        <span>Enter the studio</span>
+        <span>Start a conversation</span>
       </Link>
     );
   }
@@ -44,7 +44,7 @@ export function LandingPrimaryCta() {
       aria-disabled={!isLoaded}
     >
       <span className="pip" />
-      <span>Sign in to talk</span>
+      <span>Sign in to start</span>
     </Link>
   );
 }

@@ -626,7 +626,7 @@ export default function VoiceAgent() {
             </span>
           </div>
           <div className="account">
-            <Link className="leave" href="/">
+            <Link className="leave homeLink" href="/">
               Home
             </Link>
             <button
@@ -662,11 +662,42 @@ export default function VoiceAgent() {
           />
         )}
 
-        <section className="stage" aria-live="polite">
-          <div
-            className={`conversation ${hasConversation ? "" : "conversationEmpty"}`}
-            ref={messagesRef}
-          >
+        <div className="studioGrid">
+          <aside className="presencePanel" aria-label="Voice session status">
+            <p className="presenceEyebrow">Private session</p>
+            <div className={`presenceOrb presenceOrb-${phase}`} aria-hidden="true">
+              <span className="presenceOrbit presenceOrbitA" />
+              <span className="presenceOrbit presenceOrbitB" />
+              <span className="presenceCore" />
+            </div>
+            <div className="presenceCopy">
+              <h1>{labels[phase]}</h1>
+              <p>
+                {phase === "idle"
+                  ? "Begin with your voice, or switch to typing whenever you prefer."
+                  : notice || "Your secure realtime session is active."}
+              </p>
+            </div>
+            <div className="presenceTrust">
+              <span aria-hidden="true">✓</span>
+              Actions stay scoped to your account
+            </div>
+          </aside>
+
+          <div className="conversationWorkspace">
+            <div className="workspaceHead">
+              <div>
+                <span>Live conversation</span>
+                <h2>Transcript</h2>
+              </div>
+              <span className="turnCount">{messages.length} {messages.length === 1 ? "turn" : "turns"}</span>
+            </div>
+
+            <section className="stage" aria-live="polite">
+              <div
+                className={`conversation ${hasConversation ? "" : "conversationEmpty"}`}
+                ref={messagesRef}
+              >
             {!hasConversation && (
               <div className="emptyConversation">
                 <span>New conversation</span>
@@ -714,10 +745,10 @@ export default function VoiceAgent() {
                 </div>
               </article>
             )}
-          </div>
-        </section>
+              </div>
+            </section>
 
-        <section className="dock">
+            <section className="dock">
           <div className="toolActivitySlot" aria-live="polite" aria-atomic="true">
             {toolActivity && (
               <div
@@ -826,7 +857,9 @@ export default function VoiceAgent() {
           ) : (
             <p className="tip">{notice}</p>
           )}
-        </section>
+            </section>
+          </div>
+        </div>
       </main>
     </>
   );
