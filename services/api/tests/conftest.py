@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import AsyncIterator, Callable
 
@@ -9,6 +10,19 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
 from jwt.algorithms import RSAAlgorithm
+
+# app.main exposes the production ASGI application at import time. Supply
+# deterministic, non-secret settings before importing it so the test suite is
+# hermetic on clean machines and CI runners.
+os.environ.update(
+    {
+        "AUREN_ENV": "development",
+        "LIVEKIT_URL": "wss://example.livekit.cloud",
+        "LIVEKIT_API_KEY": "test-key",
+        "LIVEKIT_API_SECRET": "test-secret-test-secret-test-32",
+        "DEV_USER_ID": "test-user",
+    }
+)
 
 from app.config import Settings
 from app.dependencies import get_http_client
