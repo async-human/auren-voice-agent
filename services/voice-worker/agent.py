@@ -20,7 +20,13 @@ from livekit.agents import (
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
-from memory import TranscriptBuffer, distill_with_llm, fetch_context, flush_session
+from memory import (
+    TranscriptBuffer,
+    distill_with_llm,
+    fetch_context,
+    fetch_due_reminders,
+    flush_session,
+)
 from screen_reader import ScreenReader
 from session_state import SessionTracker
 from tools import ToolGateway, build_tools
@@ -513,6 +519,15 @@ async def auren_session(ctx: agents.JobContext):
                 user_id,
                 bool(memory_context.get("last_session_summary")),
             )
+
+        due_reminders = await fetch_due_reminders(gateway.client, user_id)
+        if due_reminders:
+            context_block = (
+                f"{context_block}\n\n"
+                f"Due reminders at session start: {due_reminders} "
+                "Mention these proactively before moving to a new request."
+            ).strip()
+            greeting = f"{greeting} Before we begin, {due_reminders}"
 
         persist_lock = asyncio.Lock()
         memory_persisted = False
