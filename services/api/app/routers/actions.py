@@ -10,7 +10,7 @@ from app.dependencies import get_http_client, get_session, get_settings
 from app.models.tables import User
 from app.security.auth import require_user
 from app.services import approvals
-from app.tools import registry
+from app.tools import actions as action_tools
 from app.tools.base import ToolContext, ToolError
 
 router = APIRouter(prefix="/v1/actions", tags=["actions"])
@@ -44,35 +44,16 @@ async def confirm_action(
     http: httpx.AsyncClient = Depends(get_http_client),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    action = await approvals.get_pending(session, user.id, action_id=action_id)
-    if action is None:
-        raise HTTPException(status_code=404, detail="Pending action not found")
-    await approvals.resolve_action(
-        session, action, status="confirmed", actor="user", result_summary="UI confirm"
-    )
     context = ToolContext(user_id=user.id, settings=settings, http=http, session=session)
     try:
-        result = await registry.execute_handler(context, action.tool, action.arguments)
-    except ToolError as error:
-        await approvals.resolve_action(
-            session, action, status="failed", actor="system", result_summary=str(error)
+        result = await action_tools.execute_pending_action(
+            context,
+            action_id=action_id,
+            actor="user",
         )
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    action.status = "executed"
-    action.result_summary = result.summary
-    await session.commit()
-    await approvals.record_audit(
-        session,
-        user_id=user.id,
-        tool=action.tool,
-        event_type="executed",
-        actor="user",
-        pending_action_id=action.id,
-        summary=result.summary,
-        details=result.data,
-    )
+    except ToolError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return {"ok": True, "summary": result.summary, "data": result.data}
-
 
 @router.post("/{action_id}/reject")
 async def reject_action(

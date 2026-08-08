@@ -6,7 +6,7 @@ import secrets
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import ActionAudit, PendingAction, utcnow
@@ -29,7 +29,7 @@ async def propose_action(
             select(PendingAction).where(
                 PendingAction.user_id == user_id,
                 PendingAction.idempotency_key == idempotency_key,
-                PendingAction.status.in_(("pending", "executed")),
+                PendingAction.status.in_(("pending", "executing", "executed")),
             )
         )
         if existing is not None:
@@ -47,6 +47,7 @@ async def propose_action(
         expires_at=utcnow() + PENDING_TTL,
     )
     session.add(action)
+    await session.flush()
     session.add(
         ActionAudit(
             user_id=user_id,
@@ -54,21 +55,12 @@ async def propose_action(
             arguments=arguments,
             event_type="proposed",
             actor="agent",
-            pending_action_id=None,
+            pending_action_id=action.id,
             summary=preview,
         )
     )
     await session.commit()
     await session.refresh(action)
-    # Back-fill pending id on the audit row we just wrote.
-    audit = await session.scalar(
-        select(ActionAudit)
-        .where(ActionAudit.user_id == user_id, ActionAudit.event_type == "proposed")
-        .order_by(ActionAudit.created_at.desc())
-    )
-    if audit is not None:
-        audit.pending_action_id = action.id
-        await session.commit()
     return action
 
 
@@ -99,6 +91,54 @@ async def get_pending(
         await session.commit()
         return None
     return action
+
+
+async def claim_pending(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    action_id: str | None = None,
+    actor: str = "user",
+) -> PendingAction | None:
+    """Atomically claim one pending action for execution.
+
+    The compare-and-set update is the trust boundary: concurrent confirmations
+    may read the same candidate, but only one can transition it to executing.
+    """
+    action = await get_pending(session, user_id, action_id=action_id)
+    if action is None:
+        return None
+
+    result = await session.execute(
+        update(PendingAction)
+        .where(
+            PendingAction.id == action.id,
+            PendingAction.user_id == user_id,
+            PendingAction.status == "pending",
+        )
+        .values(status="executing", resolved_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await session.rollback()
+        return None
+
+    session.add(
+        ActionAudit(
+            user_id=action.user_id,
+            tool=action.tool,
+            arguments=action.arguments,
+            event_type="confirmed",
+            actor=actor,
+            pending_action_id=action.id,
+            summary="User confirmed",
+        )
+    )
+    await session.commit()
+    claimed = await session.get(PendingAction, action.id)
+    if claimed is not None:
+        await session.refresh(claimed)
+    return claimed
 
 
 async def list_pending(session: AsyncSession, user_id: str, limit: int = 10) -> list[PendingAction]:
