@@ -20,6 +20,10 @@ __pycache__/
 .pytest_cache/
 **/.pytest_cache/
 *.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite3
 
 # clerk configuration (can include secrets)
 /.clerk/
