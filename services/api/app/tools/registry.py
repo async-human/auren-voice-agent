@@ -80,11 +80,10 @@ async def invoke(
     arguments: dict[str, Any],
     *,
     idempotency_key: str | None = None,
-    confirmed: bool = False,
 ) -> ToolResult:
     spec = get_spec(name)
 
-    if spec.confirmation_required and not confirmed:
+    if spec.confirmation_required:
         try:
             args = spec.args_model.model_validate(arguments)
         except ValidationError as error:
