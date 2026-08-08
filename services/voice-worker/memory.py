@@ -88,6 +88,30 @@ async def fetch_context(
         return None
 
 
+async def fetch_due_reminders(
+    client: httpx.AsyncClient, user_id: str
+) -> str | None:
+    """Load due reminders once so a new voice session can surface them."""
+    try:
+        response = await client.post(
+            "/v1/tools/invoke",
+            json={
+                "tool": "list_reminders",
+                "user_id": user_id,
+                "arguments": {"status": "due", "limit": 5},
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        reminders = ((payload.get("data") or {}).get("reminders") or [])
+        if not payload.get("ok") or not reminders:
+            return None
+        return str(payload.get("summary") or "").strip() or None
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        logger.warning("Could not load due reminders: %s", error)
+        return None
+
+
 async def distill_with_llm(
     *,
     llm_base_url: str,
