@@ -410,24 +410,24 @@ export default function VoiceAgent() {
           const role = resolveTranscriptRole(participant?.identity, {
             "lk.transcribed_track_id": publication?.trackSid ?? "",
           });
-        const partialText = segments
-          .filter((segment) => !segment.final)
-          .map((segment) => segment.text)
-          .join(" ")
-          .trim();
-        const partial =
-          role === "assistant" ? cleanAssistantText(partialText) : partialText;
-        if (partial) {
-          setInterim({ role, text: partial });
-          if (role === "user") setPhase("listening");
-        }
+          const partialText = segments
+            .filter((segment) => !segment.final)
+            .map((segment) => segment.text)
+            .join(" ")
+            .trim();
+          const partial =
+            role === "assistant" ? cleanAssistantText(partialText) : partialText;
+          if (partial) {
+            setInterim({ role, text: partial });
+            if (role === "user") setPhase("listening");
+          }
 
-        const receivedText = segments
-          .filter((segment) => segment.final)
-          .map((segment) => segment.text)
-          .join(" ")
-          .trim();
-        if (!receivedText) return;
+          const receivedText = segments
+            .filter((segment) => segment.final)
+            .map((segment) => segment.text)
+            .join(" ")
+            .trim();
+          if (!receivedText) return;
           commitTranscription(role, receivedText);
         },
       );
