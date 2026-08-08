@@ -78,12 +78,22 @@ def preload_ollama() -> None:
             _pull_and_warm_ollama(vision_model)
 
 
+def verify_audio_pipeline() -> None:
+    """Warm both audio models and fail startup unless TTS -> STT succeeds."""
+    print("Running active TTS -> STT audio smoke test", flush=True)
+    subprocess.run(
+        ["/usr/bin/python3", "/opt/auren/bin/audio_smoke_test.py"],
+        check=True,
+    )
+
+
 def main() -> None:
     READY_FILE.unlink(missing_ok=True)
     wait_for_json("http://127.0.0.1:8000/health")
     preload_whisper()
     preload_ollama()
     wait_for_json("http://127.0.0.1:8004/v1/audio/voices")
+    verify_audio_pipeline()
     READY_FILE.write_text("ready\n", encoding="utf-8")
     print("All Auren model services are ready", flush=True)
 

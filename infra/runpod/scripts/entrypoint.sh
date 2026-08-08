@@ -30,7 +30,10 @@ mkdir -p \
   /workspace/chatterbox/outputs \
   /workspace/runtime
 
-rm -f /workspace/runtime/models-ready /workspace/runtime/active-sessions.json
+rm -f \
+  /workspace/runtime/models-ready \
+  /workspace/runtime/active-sessions.json \
+  /workspace/runtime/audio-smoke.json
 
 echo "Starting Auren GPU runtime on $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisor/conf.d/auren.conf
