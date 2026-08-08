@@ -62,10 +62,19 @@ def test_alembic_adopts_preexisting_development_schema(
             )
         }
 
-    assert version == ("0003",)
+    assert version == ("0005",)
     assert {"memory_type", "status", "confidence", "source", "updated_at"} <= memory_columns
     assert {"topics", "outcomes", "open_threads", "importance"} <= session_columns
-    assert {"memory_evidence", "memory_events"} <= tables
+    assert {
+        "memory_evidence",
+        "memory_events",
+        "page_contexts",
+        "oauth_connections",
+        "pending_actions",
+        "action_audits",
+        "workflow_runs",
+        "scheduled_jobs",
+    } <= tables
 
 
 def _create_legacy_memory_schema(database: Path) -> None:
