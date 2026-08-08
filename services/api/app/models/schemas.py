@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 MemoryType = Literal["semantic", "procedural"]
 MemoryStatus = Literal["candidate", "active", "superseded", "rejected", "deleted"]
@@ -28,11 +28,12 @@ class ToolDescription(BaseModel):
 
 
 class ToolInvocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=128)
     arguments: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=128)
-    confirmed: bool = False
 
 
 class ToolInvocationResponse(BaseModel):

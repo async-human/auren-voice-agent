@@ -44,3 +44,20 @@ async def test_send_email_requires_confirmation(client: AsyncClient) -> None:
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["pending"] is True
+
+async def test_caller_cannot_bypass_confirmation_gate(client: AsyncClient) -> None:
+    response = await client.post(
+        "/v1/tools/invoke",
+        json={
+            "tool": "send_email",
+            "user_id": "approval-user",
+            "arguments": {
+                "to": "rahul@example.com",
+                "subject": "Agenda",
+                "body": "This must never send without a separate confirmation.",
+            },
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 422

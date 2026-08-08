@@ -1,4 +1,4 @@
-const DEFAULT_API = "http://127.0.0.1:8081";
+const DEFAULT_API = "http://127.0.0.1:8080";
 const MAX_CHARS = 100000;
 
 chrome.runtime.onInstalled.addListener(async () => {

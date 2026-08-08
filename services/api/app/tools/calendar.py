@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.services import google_oauth
 from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
+from app.tools.clock import resolve_zone
 
 
 class ListEventsArgs(BaseModel):
@@ -31,12 +32,63 @@ class FindFreeSlotsArgs(BaseModel):
     workday_end_hour: int = Field(default=18, ge=1, le=23)
 
 
-def _parse_iso(value: str) -> datetime:
+def _parse_iso(value: str, default_timezone: str = "UTC") -> datetime:
     cleaned = value.strip().replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(cleaned)
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError as error:
+        raise ToolError(f"'{value}' is not a valid ISO 8601 date and time.") from error
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=resolve_zone(default_timezone))
     return parsed.astimezone(timezone.utc)
+
+
+def _find_open_slots(
+    *,
+    now: datetime,
+    end: datetime,
+    busy_ranges: list[tuple[datetime, datetime]],
+    timezone_name: str,
+    duration_minutes: int,
+    workday_start_hour: int,
+    workday_end_hour: int,
+    limit: int = 5,
+) -> list[str]:
+    if workday_start_hour >= workday_end_hour:
+        raise ToolError("Working hours must end after they start.")
+
+    zone = resolve_zone(timezone_name)
+    local_now = now.astimezone(zone)
+    local_end = end.astimezone(zone)
+    cursor = local_now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    duration = timedelta(minutes=duration_minutes)
+    slots: list[str] = []
+
+    while cursor < local_end and len(slots) < limit:
+        slot_end = cursor + duration
+        workday_end = cursor.replace(
+            hour=workday_end_hour,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        within_workday = (
+            cursor.weekday() < 5
+            and cursor.hour >= workday_start_hour
+            and slot_end <= workday_end
+        )
+        if within_workday:
+            slot_start_utc = cursor.astimezone(timezone.utc)
+            slot_end_utc = slot_end.astimezone(timezone.utc)
+            overlap = any(
+                slot_start_utc < busy_end and slot_end_utc > busy_start
+                for busy_start, busy_end in busy_ranges
+            )
+            if not overlap:
+                slots.append(cursor.isoformat())
+        cursor += timedelta(minutes=30)
+
+    return slots
 
 
 async def list_calendar_events(context: ToolContext, args: ListEventsArgs) -> ToolResult:
@@ -92,14 +144,21 @@ async def create_calendar_event(context: ToolContext, args: CreateEventArgs) -> 
     token = await google_oauth.valid_access_token(
         context.session, context.settings, context.http, context.user_id
     )
-    start = _parse_iso(args.start_at)
+    zone_name = args.timezone or context.settings.default_timezone
+    zone = resolve_zone(zone_name)
+    start = _parse_iso(args.start_at, zone_name)
     end = start + timedelta(minutes=args.duration_minutes)
-    zone = args.timezone or context.settings.default_timezone
     body: dict = {
         "summary": args.title,
         "description": args.description or "",
-        "start": {"dateTime": start.isoformat(), "timeZone": zone},
-        "end": {"dateTime": end.isoformat(), "timeZone": zone},
+        "start": {
+            "dateTime": start.astimezone(zone).isoformat(),
+            "timeZone": zone_name,
+        },
+        "end": {
+            "dateTime": end.astimezone(zone).isoformat(),
+            "timeZone": zone_name,
+        },
     }
     if args.attendees:
         body["attendees"] = [{"email": email} for email in args.attendees]
@@ -174,17 +233,15 @@ async def find_free_slots(context: ToolContext, args: FindFreeSlotsArgs) -> Tool
         (_parse_iso(item["start"]), _parse_iso(item["end"])) for item in busy if "start" in item
     ]
 
-    slots: list[str] = []
-    cursor = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    duration = timedelta(minutes=args.duration_minutes)
-    while cursor < end and len(slots) < 5:
-        local = cursor.astimezone()
-        if args.workday_start_hour <= local.hour < args.workday_end_hour:
-            slot_end = cursor + duration
-            overlap = any(cursor < b_end and slot_end > b_start for b_start, b_end in busy_ranges)
-            if not overlap:
-                slots.append(cursor.isoformat())
-        cursor += timedelta(minutes=30)
+    slots = _find_open_slots(
+        now=now,
+        end=end,
+        busy_ranges=busy_ranges,
+        timezone_name=context.settings.default_timezone,
+        duration_minutes=args.duration_minutes,
+        workday_start_hour=args.workday_start_hour,
+        workday_end_hour=args.workday_end_hour,
+    )
 
     if not slots:
         return ToolResult(
