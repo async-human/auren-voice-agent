@@ -386,7 +386,7 @@ export default function VoiceAgent() {
           const attrs = (reader.info.attributes ?? {}) as Record<string, string>;
           const finalFlag = attrs["lk.transcription_final"];
           // Missing flag = treat as final so agent text-only replies still land.
-          const isFinal = !(finalFlag === false || finalFlag === "false");
+          const isFinal = finalFlag?.toLowerCase() !== "false";
           const role = resolveTranscriptRole(participantInfo.identity, attrs);
           const text =
             role === "assistant" ? cleanAssistantText(message) : message.trim();
