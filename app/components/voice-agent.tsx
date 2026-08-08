@@ -404,11 +404,12 @@ export default function VoiceAgent() {
       });
 
       // Legacy fallback for older agent builds that still emit track transcriptions.
-      room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
-        const trackId = segments.find((segment) => segment.trackSid)?.trackSid;
-        const role = resolveTranscriptRole(participant?.identity, {
-          "lk.transcribed_track_id": trackId ?? "",
-        });
+      room.on(
+        RoomEvent.TranscriptionReceived,
+        (segments, participant, publication) => {
+          const role = resolveTranscriptRole(participant?.identity, {
+            "lk.transcribed_track_id": publication?.trackSid ?? "",
+          });
         const partialText = segments
           .filter((segment) => !segment.final)
           .map((segment) => segment.text)
@@ -427,8 +428,9 @@ export default function VoiceAgent() {
           .join(" ")
           .trim();
         if (!receivedText) return;
-        commitTranscription(role, receivedText);
-      });
+          commitTranscription(role, receivedText);
+        },
+      );
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const localSpeaking = speakers.some(
