@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -27,9 +28,8 @@ class CompleteWorkflowArgs(BaseModel):
 
 
 class ScheduleFollowupArgs(BaseModel):
-    job_type: str = Field(
-        default="follow_up_reminder",
-        description="follow_up_reminder | email_reply_check | custom",
+    job_type: Literal["follow_up_reminder", "email_reply_check", "custom"] = (
+        "follow_up_reminder"
     )
     run_in_minutes: int = Field(default=1440, ge=1, le=60 * 24 * 30)
     message: str = Field(min_length=1, max_length=2000)
