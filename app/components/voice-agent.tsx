@@ -404,31 +404,33 @@ export default function VoiceAgent() {
       });
 
       // Legacy fallback for older agent builds that still emit track transcriptions.
-      room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
-        const trackId = segments.find((segment) => segment.trackSid)?.trackSid;
-        const role = resolveTranscriptRole(participant?.identity, {
-          "lk.transcribed_track_id": trackId ?? "",
-        });
-        const partialText = segments
-          .filter((segment) => !segment.final)
-          .map((segment) => segment.text)
-          .join(" ")
-          .trim();
-        const partial =
-          role === "assistant" ? cleanAssistantText(partialText) : partialText;
-        if (partial) {
-          setInterim({ role, text: partial });
-          if (role === "user") setPhase("listening");
-        }
+      room.on(
+        RoomEvent.TranscriptionReceived,
+        (segments, participant, publication) => {
+          const role = resolveTranscriptRole(participant?.identity, {
+            "lk.transcribed_track_id": publication?.trackSid ?? "",
+          });
+          const partialText = segments
+            .filter((segment) => !segment.final)
+            .map((segment) => segment.text)
+            .join(" ")
+            .trim();
+          const partial =
+            role === "assistant" ? cleanAssistantText(partialText) : partialText;
+          if (partial) {
+            setInterim({ role, text: partial });
+            if (role === "user") setPhase("listening");
+          }
 
-        const receivedText = segments
-          .filter((segment) => segment.final)
-          .map((segment) => segment.text)
-          .join(" ")
-          .trim();
-        if (!receivedText) return;
-        commitTranscription(role, receivedText);
-      });
+          const receivedText = segments
+            .filter((segment) => segment.final)
+            .map((segment) => segment.text)
+            .join(" ")
+            .trim();
+          if (!receivedText) return;
+          commitTranscription(role, receivedText);
+        },
+      );
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const localSpeaking = speakers.some(
