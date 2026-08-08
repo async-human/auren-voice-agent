@@ -58,7 +58,6 @@ async def invoke_tool(
             invocation.tool,
             invocation.arguments,
             idempotency_key=invocation.idempotency_key,
-            confirmed=invocation.confirmed,
         )
     except ToolError as error:
         return ToolInvocationResponse(
