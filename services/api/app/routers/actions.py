@@ -9,8 +9,7 @@ from app.config import Settings
 from app.dependencies import get_http_client, get_session, get_settings
 from app.models.tables import User
 from app.security.auth import require_user
-from app.services import approvals
-from app.tools import actions as action_tools
+from app.services import action_execution, approvals
 from app.tools.base import ToolContext, ToolError
 
 router = APIRouter(prefix="/v1/actions", tags=["actions"])
@@ -46,7 +45,7 @@ async def confirm_action(
 ) -> dict:
     context = ToolContext(user_id=user.id, settings=settings, http=http, session=session)
     try:
-        result = await action_tools.execute_pending_action(
+        result = await action_execution.execute_pending_action(
             context,
             action_id=action_id,
             actor="user",
