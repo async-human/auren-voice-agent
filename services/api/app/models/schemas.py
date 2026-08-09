@@ -25,6 +25,42 @@ class ToolDescription(BaseModel):
     description: str
     parameters: dict[str, Any]
     confirmation_required: bool
+    domain: str
+    operation: str
+    risk: Literal["read", "write", "consequential", "destructive"]
+    reversible: bool
+    parallel_safe: bool
+    requires_connection: str | None = None
+    produces: list[str] = Field(default_factory=list)
+    version: str
+
+
+class CapabilityGroup(BaseModel):
+    domain: str
+    tools: list[ToolDescription]
+
+
+class CapabilityCatalogResponse(BaseModel):
+    version: str
+    capabilities: list[CapabilityGroup]
+
+
+class ArtifactItem(BaseModel):
+    id: str
+    kind: str
+    format: str
+    title: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    sha256: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    download_url: str
+
+
+class ArtifactListResponse(BaseModel):
+    artifacts: list[ArtifactItem] = Field(default_factory=list)
 
 
 class ToolInvocation(BaseModel):

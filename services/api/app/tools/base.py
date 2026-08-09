@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -55,6 +55,20 @@ class ActionProposal:
 
 
 Preparer = Callable[[ToolContext, Any], Awaitable[ActionProposal]]
+
+RiskLevel = Literal["read", "write", "consequential", "destructive"]
+
+
+@dataclass(frozen=True)
+class CapabilityMeta:
+    domain: str
+    operation: str
+    risk: RiskLevel
+    reversible: bool
+    parallel_safe: bool
+    requires_connection: str | None = None
+    produces: tuple[str, ...] = ()
+    version: str = "1.0"
 
 
 @dataclass(frozen=True)

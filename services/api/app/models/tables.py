@@ -64,6 +64,26 @@ class Note(Base):
     )
 
 
+class Artifact(Base):
+    """Immutable, user-owned generated file with content stored outside the DB."""
+
+    __tablename__ = "artifacts"
+    __table_args__ = (Index("ix_artifacts_user_created", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    format: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(300))
+    filename: Mapped[str] = mapped_column(String(360))
+    mime_type: Mapped[str] = mapped_column(String(160))
+    storage_key: Mapped[str] = mapped_column(String(255), unique=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    artifact_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ConversationSession(Base):
     __tablename__ = "conversation_sessions"
     __table_args__ = (Index("ix_sessions_user_started", "user_id", "started_at"),)

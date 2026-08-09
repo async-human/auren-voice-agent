@@ -24,6 +24,8 @@ __pycache__/
 *.db.*
 *.sqlite
 *.sqlite3
+.data/
+**/.data/
 
 # clerk configuration (can include secrets)
 /.clerk/

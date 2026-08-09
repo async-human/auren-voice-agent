@@ -1145,6 +1145,15 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .connectionBlock h3 { margin: 0 0 9px; color: var(--paper); font-size: 13px; font-weight: 620; }
 .connectionBlock > p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
 .approvalRow { display: flex; gap: 5px; }
+.artifactList { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.artifactList li { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+.artifactFormat { display: grid; width: 42px; height: 42px; place-items: center; color: var(--aqua); border: 1px solid rgba(133, 226, 211, .19); border-radius: 12px; background: rgba(133, 226, 211, .06); font-size: 8px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
+.artifactCopy { min-width: 0; }
+.artifactCopy strong, .artifactCopy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifactCopy strong { color: var(--paper-soft); font-size: 12.5px; font-weight: 590; }
+.artifactCopy small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.artifactList button { padding: 7px 10px; color: var(--aqua); border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.025); font-size: 10.5px; cursor: pointer; }
+.artifactList button:disabled { opacity: .55; cursor: wait; }
 
 /* Auth */
 .authPage { position: relative; z-index: 4; display: grid; min-height: 100dvh; place-content: center; gap: 20px; padding: 24px; }
@@ -1238,6 +1247,9 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .controlRow button { padding: 7px 9px; }
   .typebar input { padding-right: 14px; padding-left: 14px; }
   .typebar button { padding-right: 16px; padding-left: 16px; }
+  .artifactList li { grid-template-columns: 38px minmax(0, 1fr); }
+  .artifactFormat { width: 38px; height: 38px; }
+  .artifactList button { grid-column: 2; justify-self: start; }
 }
 
 @media (max-height: 760px) and (min-width: 781px) {

@@ -12,6 +12,7 @@ from app.services.action_payloads import (
 )
 from app.tools import (
     actions,
+    artifacts,
     calendar,
     clock,
     email_tools,
@@ -23,7 +24,7 @@ from app.tools import (
     web_search,
     workflows,
 )
-from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
+from app.tools.base import CapabilityMeta, ToolContext, ToolError, ToolResult, ToolSpec
 
 SPECS: tuple[ToolSpec, ...] = (
     clock.SPEC,
@@ -55,9 +56,102 @@ SPECS: tuple[ToolSpec, ...] = (
     workflows.UPDATE_SPEC,
     workflows.COMPLETE_SPEC,
     workflows.SCHEDULE_FOLLOWUP_SPEC,
+    artifacts.CREATE_DOCUMENT_SPEC,
+    artifacts.CREATE_SPREADSHEET_SPEC,
+    artifacts.CREATE_PRESENTATION_SPEC,
+    artifacts.LIST_SPEC,
 )
 
 REGISTRY: dict[str, ToolSpec] = {spec.name: spec for spec in SPECS}
+
+CAPABILITIES: dict[str, CapabilityMeta] = {
+    "get_current_time": CapabilityMeta("time", "read_current_time", "read", True, True),
+    "get_weather": CapabilityMeta("weather", "read_forecast", "read", True, True),
+    "create_reminder": CapabilityMeta("reminders", "create", "write", True, False),
+    "list_reminders": CapabilityMeta("reminders", "list", "read", True, True),
+    "save_note": CapabilityMeta("notes", "create", "write", True, False),
+    "search_notes": CapabilityMeta("notes", "search", "read", True, True),
+    "search_web": CapabilityMeta(
+        "research", "search_web", "read", True, True, requires_connection="web_search"
+    ),
+    "check_tool_status": CapabilityMeta("system", "check_health", "read", True, True),
+    "get_page_context": CapabilityMeta(
+        "browser", "read_page", "read", True, True, requires_connection="browser_extension"
+    ),
+    "recall": CapabilityMeta("memory", "search", "read", True, True),
+    "remember": CapabilityMeta("memory", "create", "write", True, False),
+    "forget": CapabilityMeta("memory", "delete", "destructive", False, False),
+    "list_calendar_events": CapabilityMeta(
+        "calendar", "list_events", "read", True, True, requires_connection="google"
+    ),
+    "find_free_slots": CapabilityMeta(
+        "calendar", "find_availability", "read", True, True, requires_connection="google"
+    ),
+    "create_calendar_event": CapabilityMeta(
+        "calendar", "create_event", "consequential", True, False, "google"
+    ),
+    "update_calendar_event": CapabilityMeta(
+        "calendar", "update_event", "consequential", True, False, "google"
+    ),
+    "delete_calendar_event": CapabilityMeta(
+        "calendar", "delete_event", "destructive", False, False, "google"
+    ),
+    "search_emails": CapabilityMeta(
+        "gmail", "search_messages", "read", True, True, "google"
+    ),
+    "read_email": CapabilityMeta("gmail", "read_message", "read", True, True, "google"),
+    "trash_email": CapabilityMeta(
+        "gmail", "move_to_trash", "consequential", True, False, "google"
+    ),
+    "draft_email": CapabilityMeta(
+        "gmail", "create_draft", "write", True, False, "google"
+    ),
+    "send_email": CapabilityMeta(
+        "gmail", "send_message", "consequential", False, False, "google"
+    ),
+    "list_pending_actions": CapabilityMeta("approvals", "list", "read", True, True),
+    "confirm_pending_action": CapabilityMeta(
+        "approvals", "confirm", "consequential", False, False
+    ),
+    "reject_pending_action": CapabilityMeta("approvals", "reject", "write", True, False),
+    "start_workflow": CapabilityMeta("workflows", "create", "write", True, False),
+    "update_workflow": CapabilityMeta("workflows", "update", "write", True, False),
+    "complete_workflow": CapabilityMeta("workflows", "complete", "write", True, False),
+    "schedule_followup": CapabilityMeta("workflows", "schedule", "write", True, False),
+    "create_document": CapabilityMeta(
+        "artifacts",
+        "create_document",
+        "write",
+        True,
+        True,
+        "artifact_storage",
+        ("docx", "pdf", "md", "html", "txt"),
+    ),
+    "create_spreadsheet": CapabilityMeta(
+        "artifacts",
+        "create_spreadsheet",
+        "write",
+        True,
+        True,
+        "artifact_storage",
+        ("xlsx", "csv"),
+    ),
+    "create_presentation": CapabilityMeta(
+        "artifacts",
+        "create_presentation",
+        "write",
+        True,
+        True,
+        "artifact_storage",
+        ("pptx",),
+    ),
+    "list_artifacts": CapabilityMeta("artifacts", "list", "read", True, True),
+}
+
+if set(CAPABILITIES) != set(REGISTRY):
+    missing = sorted(set(REGISTRY) - set(CAPABILITIES))
+    extra = sorted(set(CAPABILITIES) - set(REGISTRY))
+    raise RuntimeError(f"Capability catalog mismatch. Missing={missing}; extra={extra}")
 
 
 def get_spec(name: str) -> ToolSpec:
@@ -161,9 +255,10 @@ def build_preview(tool: str, arguments: dict[str, Any]) -> str:
         )
     if tool == "send_email":
         body = arguments.get("body") or ""
+        attachments = arguments.get("artifact_ids") or []
         return (
             f"Send email to {arguments.get('to')} subject '{arguments.get('subject')}'. "
-            f"Body: {body}"
+            f"Attachments: {len(attachments)}. Body: {body}"
         )
     return f"Run {tool} with {arguments}"
 

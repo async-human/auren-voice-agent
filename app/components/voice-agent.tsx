@@ -9,6 +9,7 @@ import MarkdownMessage from "./markdown-message";
 
 const MemoryPanel = dynamic(() => import("./memory-panel"), { ssr: false });
 const ConnectionsPanel = dynamic(() => import("./connections-panel"), { ssr: false });
+const ArtifactsPanel = dynamic(() => import("./artifacts-panel"), { ssr: false });
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
 
@@ -40,6 +41,9 @@ type ToolActivity = {
   workflowPlan?: string[];
   workflowCurrentStep?: number;
   workflowStatus?: string;
+  artifactId?: string;
+  artifactFilename?: string;
+  artifactFormat?: string;
   receivedAt: number;
 };
 
@@ -83,6 +87,10 @@ const toolLabels: Record<string, string> = {
   recall: "Memory recall",
   remember: "Memory",
   forget: "Memory",
+  create_document: "Create document",
+  create_spreadsheet: "Create spreadsheet",
+  create_presentation: "Create presentation",
+  list_artifacts: "Generated files",
 };
 
 const toolActions: Record<string, string> = {
@@ -115,6 +123,10 @@ const toolActions: Record<string, string> = {
   recall: "Searching memory",
   remember: "Updating memory",
   forget: "Removing a memory",
+  create_document: "Creating a document",
+  create_spreadsheet: "Creating a spreadsheet",
+  create_presentation: "Creating a presentation",
+  list_artifacts: "Loading generated files",
 };
 
 const toolStatusLabels: Record<ToolActivityStatus, string> = {
@@ -146,12 +158,13 @@ function toolAction(tool: string): string {
 
 function toolKind(
   tool: string,
-): "calendar" | "search" | "weather" | "memory" | "workflow" | "utility" {
+): "calendar" | "search" | "weather" | "memory" | "workflow" | "artifact" | "utility" {
   if (/calendar|slot|reminder|followup/.test(tool)) return "calendar";
   if (/search|page_context|email/.test(tool)) return "search";
   if (/weather/.test(tool)) return "weather";
   if (/recall|remember|forget|note/.test(tool)) return "memory";
   if (/workflow|pending_action/.test(tool)) return "workflow";
+  if (/document|spreadsheet|presentation|artifact/.test(tool)) return "artifact";
   return "utility";
 }
 
@@ -211,6 +224,12 @@ function ToolGlyph({ tool }: { tool: string }) {
           <circle cx="18" cy="12" r="2" />
           <circle cx="6" cy="18" r="2" />
           <path d="M8 6h2a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8 18h2a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3" />
+        </>
+      )}
+      {kind === "artifact" && (
+        <>
+          <path d="M6 3h8l4 4v14H6z" />
+          <path d="M14 3v5h5M9 12h6M9 16h6" />
         </>
       )}
       {kind === "utility" && (
@@ -280,6 +299,7 @@ export default function VoiceAgent() {
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isConnectionsOpen, setIsConnectionsOpen] = useState(false);
+  const [isArtifactsOpen, setIsArtifactsOpen] = useState(false);
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
   const [workflow, setWorkflow] = useState<WorkflowView | null>(null);
   const [activityNow, setActivityNow] = useState(() => Date.now());
@@ -648,6 +668,14 @@ export default function VoiceAgent() {
               typeof event.workflowStatus === "string"
                 ? event.workflowStatus
                 : undefined,
+            artifactId:
+              typeof event.artifactId === "string" ? event.artifactId : undefined,
+            artifactFilename:
+              typeof event.artifactFilename === "string"
+                ? event.artifactFilename
+                : undefined,
+            artifactFormat:
+              typeof event.artifactFormat === "string" ? event.artifactFormat : undefined,
             receivedAt,
           };
           setActivityNow(receivedAt);
@@ -1052,6 +1080,13 @@ export default function VoiceAgent() {
             >
               Connect
             </button>
+            <button
+              className="leave"
+              type="button"
+              onClick={() => setIsArtifactsOpen(true)}
+            >
+              Files
+            </button>
             {phase !== "idle" && (
               <button className="leave" onClick={() => void disconnect()}>
                 End call
@@ -1070,6 +1105,9 @@ export default function VoiceAgent() {
             onClose={() => setIsConnectionsOpen(false)}
             onActionResolved={handleActionResolved}
           />
+        )}
+        {isArtifactsOpen && (
+          <ArtifactsPanel open={isArtifactsOpen} onClose={() => setIsArtifactsOpen(false)} />
         )}
 
         <div className="studioGrid">
@@ -1203,6 +1241,11 @@ export default function VoiceAgent() {
                             onClick={() => setIsConnectionsOpen(true)}
                           >
                             Review
+                          </button>
+                        )}
+                        {activity.status === "completed" && activity.artifactId && (
+                          <button type="button" onClick={() => setIsArtifactsOpen(true)}>
+                            Open file
                           </button>
                         )}
                       </span>

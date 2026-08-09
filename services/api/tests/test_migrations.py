@@ -58,6 +58,9 @@ def test_alembic_adopts_preexisting_development_schema(
         oauth_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(oauth_connections)")
         }
+        artifact_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(artifacts)")
+        }
         tables = {
             row[0]
             for row in connection.execute(
@@ -65,10 +68,11 @@ def test_alembic_adopts_preexisting_development_schema(
             )
         }
 
-    assert version == ("0006",)
+    assert version == ("0007",)
     assert {"memory_type", "status", "confidence", "source", "updated_at"} <= memory_columns
     assert {"topics", "outcomes", "open_threads", "importance"} <= session_columns
     assert "timezone_name" in oauth_columns
+    assert {"user_id", "storage_key", "sha256", "artifact_metadata"} <= artifact_columns
     assert {
         "memory_evidence",
         "memory_events",
@@ -79,6 +83,7 @@ def test_alembic_adopts_preexisting_development_schema(
         "action_audits",
         "workflow_runs",
         "scheduled_jobs",
+        "artifacts",
     } <= tables
 
 

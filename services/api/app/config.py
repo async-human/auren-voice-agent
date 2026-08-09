@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_poll_seconds: int = Field(default=30, ge=5)
 
+    # Generated user artifacts. Mount this directory on persistent storage in
+    # production; files are immutable and metadata lives in the database.
+    artifact_storage_dir: str = "./.data/artifacts"
+    artifact_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    artifact_email_max_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1024,
+        le=25 * 1024 * 1024,
+    )
+
     @field_validator("livekit_url")
     @classmethod
     def _require_websocket_url(cls, value: str) -> str:

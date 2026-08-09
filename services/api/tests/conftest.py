@@ -85,6 +85,7 @@ def settings(tmp_path) -> Settings:
         tool_gateway_token=SERVICE_TOKEN,
         default_timezone="UTC",
         clerk_issuer=ISSUER,
+        artifact_storage_dir=str(tmp_path / "artifacts"),
     )
 
 
