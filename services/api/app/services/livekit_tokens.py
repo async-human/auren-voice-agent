@@ -16,12 +16,14 @@ class VoiceSession:
     participant_token: str
     room_name: str
     user_id: str
+    stt_provider: str
 
 
 def create_voice_session(
     settings: Settings,
     user_id: str,
     display_name: str | None = None,
+    stt_provider: str = "whisper",
 ) -> VoiceSession:
     """Mint a participant token for an already-authenticated user.
 
@@ -34,7 +36,7 @@ def create_voice_session(
 
     nonce = uuid.uuid4().hex
     room_name = f"auren-{nonce}"
-    metadata = {"userId": user_id}
+    metadata = {"userId": user_id, "sttProvider": stt_provider}
     if display_name:
         metadata["displayName"] = display_name
 
@@ -70,4 +72,5 @@ def create_voice_session(
         participant_token=token.to_jwt(),
         room_name=room_name,
         user_id=user_id,
+        stt_provider=stt_provider,
     )

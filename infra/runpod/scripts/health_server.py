@@ -9,10 +9,13 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from stt_settings import STTConfig
+from stt_settings import STTConfig, available_stt_providers
 
 
 STT_CONFIG = STTConfig.from_env()
+STT_CONFIGS = {
+    provider: STTConfig.from_env(provider) for provider in available_stt_providers()
+}
 
 
 def http_ok(url: str, *, api_key: str | None = None) -> tuple[bool, str]:
@@ -68,7 +71,10 @@ def audio_smoke() -> tuple[bool, dict[str, object]]:
 
 def readiness() -> tuple[bool, dict[str, object]]:
     checks: dict[str, tuple[bool, str]] = {
-        "stt": http_ok(STT_CONFIG.health_url, api_key=STT_CONFIG.api_key),
+        **{
+            f"stt_{provider}": http_ok(config.health_url, api_key=config.api_key)
+            for provider, config in STT_CONFIGS.items()
+        },
         "ollama": http_ok("http://127.0.0.1:11434/api/version"),
         "chatterbox": http_ok("http://127.0.0.1:8004/v1/audio/voices"),
         "voice_worker": process_ok("voice-worker"),
@@ -81,6 +87,7 @@ def readiness() -> tuple[bool, dict[str, object]]:
         "models_ready": marker,
         "stt_provider": STT_CONFIG.provider,
         "stt_model": STT_CONFIG.model,
+        "stt_available_providers": list(STT_CONFIGS),
         "active_sessions": active_sessions(),
         "audio_smoke": audio_result,
         "checks": {

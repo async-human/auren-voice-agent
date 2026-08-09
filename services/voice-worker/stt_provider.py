@@ -6,7 +6,13 @@ from urllib.parse import urlencode
 import aiohttp
 from livekit.plugins import openai
 
-from stt_settings import STTConfig, SUPPORTED_STT_PROVIDERS
+from stt_settings import (
+    STTConfig,
+    SUPPORTED_STT_PROVIDERS,
+    available_stt_providers,
+    default_stt_provider,
+    normalize_stt_provider,
+)
 
 
 class NemotronSTT(openai.STT):
@@ -64,5 +70,8 @@ __all__ = [
     "NemotronSTT",
     "STTConfig",
     "SUPPORTED_STT_PROVIDERS",
+    "available_stt_providers",
     "build_stt",
+    "default_stt_provider",
+    "normalize_stt_provider",
 ]

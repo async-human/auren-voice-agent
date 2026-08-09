@@ -86,6 +86,8 @@ def settings(tmp_path) -> Settings:
         default_timezone="UTC",
         clerk_issuer=ISSUER,
         artifact_storage_dir=str(tmp_path / "artifacts"),
+        stt_default_provider="whisper",
+        stt_available_providers="whisper,qwen,nemotron",
     )
 
 

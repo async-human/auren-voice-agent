@@ -1,8 +1,9 @@
 # Pluggable speech-to-text providers
 
 Auren uses one OpenAI-compatible speech-to-text contract while allowing the
-inference runtime to change independently. Exactly one STT provider is active
-for a worker deployment.
+inference runtime to change independently. A signed-in user can choose a
+provider before each call; that validated choice is carried in signed LiveKit
+metadata and the worker creates the matching STT client for that session.
 
 | `STT_PROVIDER` | Runtime | Mode used by Auren | Default model |
 | --- | --- | --- | --- |
@@ -12,18 +13,34 @@ for a worker deployment.
 
 Whisper remains the production default. Qwen and Nemotron are opt-in until an
 Auren-specific evaluation shows a worthwhile accuracy or latency improvement.
-The worker never loads multiple ASR models simultaneously.
+Auren does not load model weights inside the worker: every enabled provider
+must have a reachable inference runtime.
 
 ## Common configuration
 
 ```dotenv
 STT_PROVIDER=whisper
+STT_AVAILABLE_PROVIDERS=whisper
 STT_BASE_URL=http://127.0.0.1:8000/v1
 STT_MODEL=Systran/faster-whisper-medium.en
 STT_LANGUAGE=en
 STT_USE_REALTIME=false
 STT_API_KEY=local
 ```
+
+`STT_PROVIDER` is the worker default and uses the generic `STT_*` endpoint
+settings. `STT_AVAILABLE_PROVIDERS` is the allowlist for signed session choices.
+For safe rollout, it defaults to only the default provider.
+
+The API independently controls what the browser can see:
+
+```dotenv
+STT_DEFAULT_PROVIDER=whisper
+STT_AVAILABLE_PROVIDERS=whisper
+```
+
+Keep the API and worker allowlists identical. Never advertise a provider until
+its private endpoint is configured and tested on the worker.
 
 `STT_BASE_URL` is normalized to end in `/v1`. `STT_HEALTH_URL` is optional and
 defaults to the same service's `/health` route. Use it when a gateway exposes
@@ -70,7 +87,7 @@ vllm serve Qwen/Qwen3-ASR-1.7B \
   --api-key replace-with-a-secret
 ```
 
-Point Auren at the private endpoint:
+For a Qwen-only worker, point the generic settings at the private endpoint:
 
 ```dotenv
 STT_PROVIDER=qwen
@@ -80,6 +97,17 @@ STT_MODEL=Qwen/Qwen3-ASR-1.7B
 STT_LANGUAGE=
 STT_USE_REALTIME=false
 STT_API_KEY=replace-with-a-secret
+```
+
+For per-session selection while Whisper remains the default, use the
+provider-specific settings instead:
+
+```dotenv
+QWEN_ASR_BASE_URL=http://qwen-asr.internal:8000/v1
+QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B
+QWEN_ASR_LANGUAGE=
+QWEN_ASR_USE_REALTIME=false
+QWEN_ASR_API_KEY=replace-with-a-secret
 ```
 
 Qwen's streaming inference API is not the same wire protocol as OpenAI's
@@ -117,6 +145,23 @@ STT_USE_REALTIME=true
 STT_API_KEY=replace-with-a-secret
 ```
 
+For per-session selection while Whisper remains the default, configure:
+
+```dotenv
+NEMOTRON_ASR_BASE_URL=http://nemotron-asr.internal:8080/v1
+NEMOTRON_ASR_MODEL=nvidia/nemotron-3.5-asr-streaming-0.6b
+NEMOTRON_ASR_LANGUAGE=auto
+NEMOTRON_ASR_USE_REALTIME=true
+NEMOTRON_ASR_API_KEY=replace-with-a-secret
+```
+
+After both companion runtimes pass their smoke tests, enable the selector on
+both the API and worker:
+
+```dotenv
+STT_AVAILABLE_PROVIDERS=whisper,qwen,nemotron
+```
+
 Set `STT_USE_REALTIME=false` to use utterance-level REST during troubleshooting.
 The checked-in server configuration uses 160 ms right context as a reasonable
 starting point. Benchmark 80, 160, and 320 ms before selecting a production
@@ -128,18 +173,19 @@ review before production distribution.
 
 ## Deployment and resource isolation
 
-The bundled RunPod image starts Speaches only for `STT_PROVIDER=whisper`. For
-Qwen or Nemotron it disables the local Speaches process and expects the selected
-endpoint to be reachable as a companion or external private service.
+The bundled RunPod image starts Speaches when `STT_PROVIDER=whisper`. Qwen and
+Nemotron remain companion or external private services. A session selection
+changes the client endpoint; it does not start or stop model servers.
 
 Do not load Whisper, Qwen3-ASR, and Nemotron together on Auren's existing shared
 GPU. The pod already hosts the LLM and TTS; multiple ASR runtimes would distort
 latency measurements and increase out-of-memory risk. Use one of these patterns:
 
-1. Restart the staging worker with one provider at a time for controlled tests.
-2. Run three identically configured workers against separate GPU runtimes for
-   concurrent A/B evaluation.
-3. Keep production on Whisper until the evaluation gate is met.
+1. Keep Whisper on the worker pod and run Qwen/Nemotron on isolated companion
+   GPUs with private networking.
+2. Use the UI selector to run the same scripted utterances through each provider.
+3. Keep production's default and fallback on Whisper until the evaluation gate
+   is met.
 
 ## Verification
 

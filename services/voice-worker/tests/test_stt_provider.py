@@ -4,11 +4,17 @@ import os
 import unittest
 from unittest.mock import patch
 
-from stt_provider import NemotronSTT, STTConfig, build_stt
+from stt_provider import (
+    NemotronSTT,
+    STTConfig,
+    available_stt_providers,
+    build_stt,
+)
 
 
 STT_ENV_NAMES = {
     "STT_PROVIDER",
+    "STT_AVAILABLE_PROVIDERS",
     "STT_BASE_URL",
     "STT_MODEL",
     "STT_LANGUAGE",
@@ -17,10 +23,22 @@ STT_ENV_NAMES = {
     "STT_HEALTH_URL",
     "FASTER_WHISPER_BASE_URL",
     "FASTER_WHISPER_MODEL",
+    "FASTER_WHISPER_LANGUAGE",
+    "FASTER_WHISPER_USE_REALTIME",
+    "FASTER_WHISPER_API_KEY",
+    "FASTER_WHISPER_HEALTH_URL",
     "QWEN_ASR_BASE_URL",
     "QWEN_ASR_MODEL",
+    "QWEN_ASR_LANGUAGE",
+    "QWEN_ASR_USE_REALTIME",
+    "QWEN_ASR_API_KEY",
+    "QWEN_ASR_HEALTH_URL",
     "NEMOTRON_ASR_BASE_URL",
     "NEMOTRON_ASR_MODEL",
+    "NEMOTRON_ASR_LANGUAGE",
+    "NEMOTRON_ASR_USE_REALTIME",
+    "NEMOTRON_ASR_API_KEY",
+    "NEMOTRON_ASR_HEALTH_URL",
     "ALL_PROXY",
     "all_proxy",
     "HTTP_PROXY",
@@ -36,6 +54,12 @@ class STTProviderTests(unittest.TestCase):
         environment.update(values)
         with patch.dict(os.environ, environment, clear=True):
             return STTConfig.from_env()
+
+    def selected_config(self, provider: str, **values: str) -> STTConfig:
+        environment = {key: value for key, value in os.environ.items() if key not in STT_ENV_NAMES}
+        environment.update(values)
+        with patch.dict(os.environ, environment, clear=True):
+            return STTConfig.from_env(provider)
 
     def test_whisper_is_the_backward_compatible_default(self) -> None:
         config = self.config(
@@ -101,6 +125,55 @@ class STTProviderTests(unittest.TestCase):
     def test_unknown_provider_is_rejected(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "Unsupported STT_PROVIDER"):
             self.config(STT_PROVIDER="unknown")
+
+    def test_session_selection_uses_provider_specific_endpoint(self) -> None:
+        config = self.selected_config(
+            "qwen",
+            STT_PROVIDER="whisper",
+            STT_AVAILABLE_PROVIDERS="whisper,qwen,nemotron",
+            STT_BASE_URL="http://127.0.0.1:8000/v1",
+            QWEN_ASR_BASE_URL="http://qwen.internal:8001/v1",
+            QWEN_ASR_LANGUAGE="hi",
+            QWEN_ASR_API_KEY="qwen-secret",
+        )
+
+        self.assertEqual(config.provider, "qwen")
+        self.assertEqual(config.base_url, "http://qwen.internal:8001/v1")
+        self.assertEqual(config.language, "hi")
+        self.assertEqual(config.api_key, "qwen-secret")
+
+    def test_session_selection_keeps_nemotron_realtime(self) -> None:
+        config = self.selected_config(
+            "nemotron",
+            STT_PROVIDER="whisper",
+            STT_AVAILABLE_PROVIDERS="whisper,nemotron",
+            STT_BASE_URL="http://127.0.0.1:8000/v1",
+            NEMOTRON_ASR_BASE_URL="http://nemotron.internal:8080/v1",
+            NEMOTRON_ASR_USE_REALTIME="true",
+        )
+
+        self.assertEqual(config.provider, "nemotron")
+        self.assertTrue(config.use_realtime)
+
+    def test_disabled_session_provider_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "not enabled"):
+            self.selected_config(
+                "qwen",
+                STT_PROVIDER="whisper",
+                STT_AVAILABLE_PROVIDERS="whisper",
+                STT_BASE_URL="http://127.0.0.1:8000/v1",
+                QWEN_ASR_BASE_URL="http://qwen.internal:8001/v1",
+            )
+
+    def test_default_provider_must_be_available(self) -> None:
+        environment = {key: value for key, value in os.environ.items() if key not in STT_ENV_NAMES}
+        environment.update(
+            STT_PROVIDER="whisper",
+            STT_AVAILABLE_PROVIDERS="qwen,nemotron",
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "must be included"):
+                available_stt_providers()
 
     def test_factory_preserves_provider_capabilities(self) -> None:
         config = self.config(

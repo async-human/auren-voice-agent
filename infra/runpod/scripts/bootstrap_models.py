@@ -13,12 +13,15 @@ from urllib.request import Request, urlopen
 import uuid
 import wave
 
-from stt_settings import STTConfig
+from stt_settings import STTConfig, available_stt_providers
 
 
 READY_FILE = Path("/workspace/runtime/models-ready")
 TIMEOUT_SECONDS = int(os.getenv("AUREN_BOOT_TIMEOUT_SECONDS", "1800"))
 STT_CONFIG = STTConfig.from_env()
+STT_CONFIGS = {
+    provider: STTConfig.from_env(provider) for provider in available_stt_providers()
+}
 
 
 def wait_for_json(
@@ -213,7 +216,9 @@ def verify_audio_pipeline() -> None:
 
 def main() -> None:
     READY_FILE.unlink(missing_ok=True)
-    wait_for_json(STT_CONFIG.health_url, api_key=STT_CONFIG.api_key)
+    for config in STT_CONFIGS.values():
+        print(f"Waiting for {config.provider} STT health", flush=True)
+        wait_for_json(config.health_url, api_key=config.api_key)
     preload_stt()
     # Load ASR while the GPU is still empty. Doing this after Ollama/Chatterbox
     # can yield an out-of-memory failure on shared GPU deployments.
