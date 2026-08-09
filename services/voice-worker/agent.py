@@ -262,9 +262,76 @@ def _is_page_explain_request(text: str) -> bool:
     )
 
 
+_HOME_LOCATION_RE = re.compile(
+    r"(?:Lives in|I(?:'?m| am)? (?:based|living|staying) in|"
+    r"I (?:live|stay) in|I(?:'?m| am) from|"
+    r"my (?:home )?city is|my location is|location is|city is|"
+    r"(?:based|living|staying) in)\s+([A-Za-z][A-Za-z .'-]{1,60})",
+    re.I,
+)
+
+
+def _clean_location_candidate(raw: str) -> str | None:
+    candidate = re.split(r"[?!,;]|\b(?:today|now|currently)\b", raw, 1)[0].strip(" .")
+    return candidate or None
+
+
+_SOFT_LOCATION_RE = re.compile(
+    r"(?:weather (?:in|for)|checking weather in|timezone[^.?\n]{0,40}\bfor)\s+"
+    r"([A-Za-z][A-Za-z .'-]{1,40})",
+    re.I,
+)
+_SOFT_POSSESSIVE_WEATHER_RE = re.compile(
+    r"\b([A-Z][a-z]{2,40})'s weather\b"
+)
+
+
+def _location_from_memory_context(memory_context: dict | None) -> str | None:
+    """Pull a remembered home city from session memory context."""
+    if not memory_context:
+        return None
+    blobs: list[str] = []
+    for item in memory_context.get("memories") or []:
+        if isinstance(item, dict):
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                blobs.append(content)
+        elif isinstance(item, str) and item.strip():
+            blobs.append(item)
+    for key in (
+        "preferences",
+        "profile_summary",
+        "instructions_block",
+        "last_session_summary",
+    ):
+        value = memory_context.get(key)
+        if isinstance(value, str) and value.strip():
+            blobs.append(value)
+
+    # Prefer explicit home-location facts.
+    for blob in blobs:
+        match = _HOME_LOCATION_RE.search(blob)
+        if match:
+            cleaned = _clean_location_candidate(match.group(1))
+            if cleaned:
+                return cleaned
+
+    # Fall back to location cues from prior weather/reminder context.
+    for blob in blobs:
+        match = _SOFT_LOCATION_RE.search(blob) or _SOFT_POSSESSIVE_WEATHER_RE.search(
+            blob
+        )
+        if match:
+            cleaned = _clean_location_candidate(match.group(1))
+            if cleaned and cleaned.lower() not in {"the", "your", "this", "that"}:
+                return cleaned
+    return None
+
+
 def _extract_location(text: str, *, allow_plain: bool = False) -> str | None:
     patterns = (
-        r"\b(?:i (?:live|stay) in|my (?:location|city) is|location is|city is)\s+"
+        r"\b(?:i(?:'?m| am)? (?:based|living|staying) in|i (?:live|stay) in|"
+        r"i(?:'?m| am) from|my (?:location|city|home city) is|location is|city is)\s+"
         r"([A-Za-z][A-Za-z .'-]{1,60})",
         r"\b(?:weather|forecast|temperature)(?:\s+\w+){0,3}\s+"
         r"(?:in|for|at)\s+([A-Za-z][A-Za-z .'-]{1,60})",
@@ -272,9 +339,7 @@ def _extract_location(text: str, *, allow_plain: bool = False) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
         if match:
-            candidate = re.split(r"[?!,;]|\b(?:today|now|currently)\b", match.group(1), 1)[
-                0
-            ].strip(" .")
+            candidate = _clean_location_candidate(match.group(1))
             if candidate:
                 return candidate
 
@@ -298,6 +363,7 @@ class Auren(Agent):
         gateway: ToolGateway | None = None,
         user_id: str | None = None,
         screen_reader: ScreenReader | None = None,
+        default_location: str | None = None,
     ) -> None:
         super().__init__(
             instructions=instructions,
@@ -306,6 +372,7 @@ class Auren(Agent):
         self._gateway = gateway
         self._user_id = user_id
         self._screen_reader = screen_reader
+        self._default_location = (default_location or "").strip() or None
         self._awaiting_weather_location = False
 
     async def on_user_turn_completed(
@@ -370,24 +437,40 @@ class Auren(Agent):
             return
 
         weather_requested = _is_weather_request(text)
-        location = _extract_location(
+        was_awaiting_location = self._awaiting_weather_location
+        stated_home = bool(_HOME_LOCATION_RE.search(text))
+        location_from_utterance = _extract_location(
             text,
-            allow_plain=self._awaiting_weather_location and not weather_requested,
+            allow_plain=was_awaiting_location and not weather_requested,
+        )
+        if location_from_utterance is None and stated_home:
+            home_match = _HOME_LOCATION_RE.search(text)
+            if home_match:
+                location_from_utterance = _clean_location_candidate(home_match.group(1))
+        location = location_from_utterance or (
+            self._default_location if weather_requested else None
         )
         if weather_requested and location is None:
             self._awaiting_weather_location = True
             return
 
-        if location and (weather_requested or self._awaiting_weather_location):
+        if location and (weather_requested or was_awaiting_location):
+            used_remembered_location = (
+                weather_requested and location_from_utterance is None
+            )
             self._awaiting_weather_location = False
             results: list[str] = []
-            if "remember" in text.lower():
+            should_remember = stated_home or (
+                was_awaiting_location and bool(location_from_utterance)
+            )
+            if should_remember:
+                self._default_location = location_from_utterance or location
                 try:
                     results.append(
                         await self._gateway.invoke(
                             "remember",
                             self._user_id,
-                            {"content": f"Lives in {location}"},
+                            {"content": f"Lives in {self._default_location}"},
                         )
                     )
                 except Exception as error:  # noqa: BLE001 - weather should still run
@@ -402,13 +485,41 @@ class Auren(Agent):
                 )
             except Exception as error:  # noqa: BLE001 - give the model the real failure
                 results.append(f"get_weather failed: {error}")
+            memory_note = (
+                f" Used remembered home location '{location}'."
+                if used_remembered_location
+                else ""
+            )
             turn_ctx.add_message(
                 role="system",
                 content=(
                     "Authoritative live tool results for this turn: "
                     + " ".join(results)
+                    + memory_note
                     + " Answer directly from these results. Do not call the same "
                     "tool again and do not claim it is unavailable after success."
+                ),
+            )
+            await self.update_chat_ctx(turn_ctx)
+            return
+
+        # Persist home location even when the user is not asking for weather.
+        if stated_home and location_from_utterance:
+            self._default_location = location_from_utterance
+            try:
+                remember_result = await self._gateway.invoke(
+                    "remember",
+                    self._user_id,
+                    {"content": f"Lives in {location_from_utterance}"},
+                )
+            except Exception as error:  # noqa: BLE001 - soft-fail memory write
+                remember_result = f"remember failed: {error}"
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Authoritative memory update for this turn: "
+                    f"{remember_result} Acknowledge briefly that you'll remember "
+                    f"their home location as {location_from_utterance}."
                 ),
             )
             await self.update_chat_ctx(turn_ctx)
@@ -599,6 +710,7 @@ async def auren_session(ctx: agents.JobContext):
     gateway: ToolGateway | None = None
     tools: list = []
     context_block = ""
+    default_location: str | None = None
     greeting = (
         f"Hello {display_name.split()[0]}. I’m Auren — what can I help you with?"
         if display_name
@@ -627,10 +739,12 @@ async def auren_session(ctx: agents.JobContext):
             context_block = memory_context.get("instructions_block") or ""
             greeting = memory_context.get("greeting") or greeting
             display_name = memory_context.get("display_name") or display_name
+            default_location = _location_from_memory_context(memory_context)
             logging.info(
-                "Loaded memory context for %s (previous conversation: %s)",
+                "Loaded memory context for %s (previous conversation: %s, home_location: %s)",
                 user_id,
                 bool(memory_context.get("last_session_summary")),
+                default_location or "none",
             )
 
         due_reminders = await fetch_due_reminders(gateway.client, user_id)
@@ -751,6 +865,7 @@ async def auren_session(ctx: agents.JobContext):
         gateway=gateway,
         user_id=user_id,
         screen_reader=screen_reader,
+        default_location=default_location,
     )
 
     async def publish_transcript(
@@ -812,6 +927,7 @@ async def auren_session(ctx: agents.JobContext):
         # UI look stuck on "thinking" whenever Chatterbox is slow or down.
         room_options=room_io.RoomOptions(
             audio_input=True,
+            audio_output=True,
             text_input=True,
             text_output=room_io.TextOutputOptions(sync_transcription=False),
         ),

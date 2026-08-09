@@ -131,6 +131,8 @@ export default function VoiceAgent() {
   const voiceMutedRef = useRef(false);
   const nextId = useRef(1);
   const toolActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Dedupe across lk.transcription + auren.transcript (same reply can arrive 2–3×).
+  const recentTranscriptKeysRef = useRef<Map<string, number>>(new Map());
 
   const disconnect = useCallback(async () => {
     const room = roomRef.current;
@@ -142,6 +144,7 @@ export default function VoiceAgent() {
       });
     });
     audioElementsRef.current = [];
+    recentTranscriptKeysRef.current.clear();
     if (toolActivityTimerRef.current) {
       clearTimeout(toolActivityTimerRef.current);
       toolActivityTimerRef.current = null;
@@ -229,14 +232,44 @@ export default function VoiceAgent() {
       const room = new Room({ adaptiveStream: true, dynacast: false });
       roomRef.current = room;
 
-      room.on(RoomEvent.TrackSubscribed, (track) => {
+      const attachRemoteAudio = (track: Track) => {
         if (track.kind !== Track.Kind.Audio) return;
         const audioElement = track.attach();
         audioElement.autoplay = true;
+        audioElement.playsInline = true;
         audioElement.muted = voiceMutedRef.current;
-        audioElement.style.display = "none";
+        // display:none can prevent playback in some browsers; keep it in-layout but invisible.
+        Object.assign(audioElement.style, {
+          position: "fixed",
+          width: "1px",
+          height: "1px",
+          opacity: "0",
+          pointerEvents: "none",
+          left: "0",
+          bottom: "0",
+        });
         document.body.appendChild(audioElement);
         audioElementsRef.current.push(audioElement);
+
+        const tryPlay = async () => {
+          try {
+            await room.startAudio();
+            if (!voiceMutedRef.current) {
+              audioElement.muted = false;
+              await audioElement.play();
+            }
+          } catch (error) {
+            console.error("Auren voice playback blocked", error);
+            setFailure(
+              "Browser blocked Auren’s voice. Click “Auren’s voice” or tap anywhere on the page, then ask again.",
+            );
+          }
+        };
+        void tryPlay();
+      };
+
+      room.on(RoomEvent.TrackSubscribed, (track) => {
+        attachRemoteAudio(track);
       });
 
       room.on(RoomEvent.TrackUnsubscribed, (track) => {
@@ -253,22 +286,40 @@ export default function VoiceAgent() {
           role === "assistant" ? cleanAssistantText(rawText) : rawText.trim();
         if (!text) return;
 
-        setMessages((current) => {
-          const last = current.at(-1);
-          // Typed sends already insert the user bubble; skip the stream echo.
-          if (
-            role === "user" &&
-            last?.role === "user" &&
-            last.text.trim() === text
-          ) {
-            return current;
+        const key = `${role}:${text.toLowerCase()}`;
+        const now = Date.now();
+        const lastSeen = recentTranscriptKeysRef.current.get(key);
+        if (lastSeen && now - lastSeen < 12_000) {
+          setInterim(null);
+          return;
+        }
+        recentTranscriptKeysRef.current.set(key, now);
+        // Bound the dedupe map so long sessions don't grow forever.
+        if (recentTranscriptKeysRef.current.size > 80) {
+          for (const [entryKey, seenAt] of recentTranscriptKeysRef.current) {
+            if (now - seenAt > 12_000) {
+              recentTranscriptKeysRef.current.delete(entryKey);
+            }
           }
+        }
+
+        setMessages((current) => {
+          const duplicate = current
+            .slice(-6)
+            .some(
+              (message) =>
+                message.role === role && message.text.trim() === text,
+            );
+          if (duplicate) return current;
           return [...current, { id: nextId.current++, role, text }];
         });
         setInterim(null);
         setPhase(role === "user" ? "thinking" : "listening");
         if (role === "assistant") {
-          setNotice("Just stop talking when you’re done");
+          setNotice("Auren replied — voice may take a moment while speech synthesizes");
+          void room.startAudio().catch(() => {
+            // Autoplay unlock is best-effort; TrackSubscribed also retries play().
+          });
         }
       };
 
@@ -378,16 +429,18 @@ export default function VoiceAgent() {
         }
       });
 
-      // Agents publish STT + replies on the lk.transcription text stream.
-      // TranscriptionReceived is deprecated and no longer fires for AgentSession.
+      // Live transcripts for interim captions. Finals also arrive on
+      // auren.transcript — commitTranscription dedupes identical copies.
       room.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
         try {
           const message = await reader.readAll();
-          const attrs = (reader.info.attributes ?? {}) as Record<string, string>;
+          const attrs = reader.info.attributes ?? {};
           const finalFlag = attrs["lk.transcription_final"];
-          // Missing flag = treat as final so agent text-only replies still land.
-          const isFinal = finalFlag?.toLowerCase() !== "false";
-          const role = resolveTranscriptRole(participantInfo.identity, attrs);
+          const isFinal = !(finalFlag === false || finalFlag === "false");
+          const role = resolveTranscriptRole(
+            participantInfo.identity,
+            attrs as Record<string, string>,
+          );
           const text =
             role === "assistant" ? cleanAssistantText(message) : message.trim();
           if (!text) return;
@@ -403,35 +456,6 @@ export default function VoiceAgent() {
         }
       });
 
-      // Legacy fallback for older agent builds that still emit track transcriptions.
-      room.on(
-        RoomEvent.TranscriptionReceived,
-        (segments, participant, publication) => {
-          const role = resolveTranscriptRole(participant?.identity, {
-            "lk.transcribed_track_id": publication?.trackSid ?? "",
-          });
-          const partialText = segments
-            .filter((segment) => !segment.final)
-            .map((segment) => segment.text)
-            .join(" ")
-            .trim();
-          const partial =
-            role === "assistant" ? cleanAssistantText(partialText) : partialText;
-          if (partial) {
-            setInterim({ role, text: partial });
-            if (role === "user") setPhase("listening");
-          }
-
-          const receivedText = segments
-            .filter((segment) => segment.final)
-            .map((segment) => segment.text)
-            .join(" ")
-            .trim();
-          if (!receivedText) return;
-          commitTranscription(role, receivedText);
-        },
-      );
-
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const localSpeaking = speakers.some(
           (speaker) => speaker.identity === room.localParticipant.identity,
@@ -441,6 +465,14 @@ export default function VoiceAgent() {
         );
         if (agentIsSpeaking) {
           setPhase("speaking");
+          setNotice("Auren is speaking");
+          if (!voiceMutedRef.current) {
+            void room.startAudio().catch(() => undefined);
+            audioElementsRef.current.forEach((element) => {
+              element.muted = false;
+              void element.play().catch(() => undefined);
+            });
+          }
         } else if (localSpeaking && !voiceMutedRef.current) {
           setNotice("Hearing you…");
         }
@@ -481,6 +513,12 @@ export default function VoiceAgent() {
 
       await room.connect(connection.serverUrl, connection.participantToken);
       await room.startAudio();
+      // Attach any agent audio that was already live when we joined.
+      for (const participant of room.remoteParticipants.values()) {
+        for (const publication of participant.trackPublications.values()) {
+          if (publication.track) attachRemoteAudio(publication.track);
+        }
+      }
       await room.localParticipant.setMicrophoneEnabled(enableMicrophone);
       setIsMicMuted(!enableMicrophone);
       setPhase(enableMicrophone ? "listening" : "paused");
@@ -554,10 +592,19 @@ export default function VoiceAgent() {
   const toggleVoicePlayback = useCallback(() => {
     const nextMuted = !isVoiceMuted;
     voiceMutedRef.current = nextMuted;
+    const room = roomRef.current;
+    if (!nextMuted && room) {
+      void room.startAudio().catch(() => undefined);
+    }
     audioElementsRef.current.forEach((element) => {
       element.muted = nextMuted;
+      if (!nextMuted) {
+        void element.play().catch(() => undefined);
+      }
     });
     setIsVoiceMuted(nextMuted);
+    setNotice(nextMuted ? "Auren’s voice is muted" : "Auren’s voice is on");
+    if (!nextMuted) setFailure(null);
   }, [isVoiceMuted]);
 
   const toggleTypeInput = useCallback(async () => {
