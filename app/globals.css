@@ -765,6 +765,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   width: 100%;
   margin-top: 20px;
   padding-top: 16px;
+  overflow: hidden;
   border-top: 1px solid var(--line);
 }
 .activityRailHead {
@@ -874,9 +875,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   display: grid;
   min-height: 0;
   flex: 1;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 7px;
   margin: 12px -3px 0;
-  padding: 0 3px 3px;
+  padding: 0 6px 8px 3px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: rgba(139, 233, 213, .15) transparent;
@@ -888,8 +891,8 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   grid-template-columns: 31px minmax(0, 1fr) auto;
   align-items: start;
   gap: 10px;
-  min-height: 66px;
-  padding: 9px;
+  min-height: 76px;
+  padding: 10px 9px;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: rgba(255, 255, 255, .022);
@@ -931,7 +934,16 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .toolTimelineItem-started .toolTimelineCopy small i { box-shadow: 0 0 8px rgba(139, 233, 213, .62); animation: coreBreath 1s ease-in-out infinite; }
 .toolTimelineItem-awaiting_approval .toolTimelineCopy small { color: #ffc27a; }
 .toolTimelineItem-failed .toolTimelineCopy small { color: var(--coral); }
-.toolTimelineCopy p { margin: 2px 0 0; color: var(--muted); font-size: 8.5px; line-height: 1.42; }
+.toolTimelineCopy p {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8.5px;
+  line-height: 1.42;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .toolTimelineInput { overflow: hidden; color: var(--faint); font-size: 7.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .toolTimelineMeta { display: grid; justify-items: end; gap: 4px; padding-top: 2px; color: var(--faint); font-size: 8px; font-variant-numeric: tabular-nums; }
 .toolTimelineMeta button {
@@ -1286,7 +1298,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .presenceCopy p { font-size: 11.5px; }
   .sttPicker { margin-top: 14px; padding-top: 12px; }
   .activityRail { margin-top: 14px; padding-top: 14px; }
-  .toolTimeline { max-height: 182px; }
+  .toolTimeline { max-height: min(420px, 48dvh); }
   .presenceTrust { width: 100%; margin-top: 10px; padding-top: 10px; }
   .conversationWorkspace { min-height: min(690px, calc(100dvh - 74px)); }
   .workspaceHead { min-height: 68px; padding: 14px 17px; }
@@ -1344,8 +1356,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .sttPicker { margin-top: 10px; padding-top: 10px; }
   .sttPicker > p { display: none; }
   .activityRail { margin-top: 11px; padding-top: 11px; }
-  .toolTimeline { max-height: 134px; }
-  .toolTimelineItem { min-height: 46px; }
+  .toolTimelineItem { min-height: 68px; padding-top: 8px; padding-bottom: 8px; }
   .presenceTrust { margin-top: 8px; padding-top: 8px; }
   .workspaceHead { min-height: 64px; }
   .dock { padding-top: 9px; padding-bottom: 11px; }
