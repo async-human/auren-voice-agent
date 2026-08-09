@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services import google_oauth
 from app.services.google_http import request as google_request
-from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
+from app.tools.base import ActionProposal, ToolContext, ToolError, ToolResult, ToolSpec
 from app.tools.clock import resolve_zone
 
 
@@ -60,6 +62,48 @@ class CreateEventArgs(BaseModel):
         return clean
 
 
+class UpdateEventArgs(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str = Field(min_length=1, max_length=1024)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    start_at: str | None = Field(default=None, description="New ISO 8601 start time")
+    duration_minutes: int | None = Field(default=None, ge=5, le=480)
+    attendees: list[str] | None = None
+    description: str | None = Field(default=None, max_length=8000)
+    timezone: str | None = None
+
+    @field_validator("attendees")
+    @classmethod
+    def _validate_attendees(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        return CreateEventArgs._validate_attendees(values)
+
+    @model_validator(mode="after")
+    def _has_change(self) -> UpdateEventArgs:
+        editable = {"title", "start_at", "duration_minutes", "attendees", "description"}
+        if not (self.model_fields_set & editable) and "_approval_snapshot" not in (
+            self.model_extra or {}
+        ):
+            raise ValueError("at least one event change is required")
+        return self
+
+
+class DeleteEventArgs(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str = Field(min_length=1, max_length=1024)
+    delete_series: bool = Field(
+        default=False,
+        description="For a recurring occurrence, delete the entire series instead.",
+    )
+    notify_attendees: bool = Field(
+        default=True,
+        description="Send cancellation updates when the event has attendees.",
+    )
+
+
 class FindFreeSlotsArgs(BaseModel):
     days_ahead: int = Field(default=7, ge=1, le=21)
     duration_minutes: int = Field(default=30, ge=15, le=180)
@@ -76,7 +120,88 @@ def _parse_iso(value: str, default_timezone: str = "UTC") -> datetime:
         raise ToolError(f"'{value}' is not a valid ISO 8601 date and time.") from error
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=resolve_zone(default_timezone))
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
+
+
+def _calendar_error(response: httpx.Response, operation: str) -> None:
+    if response.status_code == 401:
+        raise ToolError("Google Calendar authorization failed. Reconnect Google.")
+    if response.status_code == 403:
+        raise ToolError(f"Google Calendar denied permission to {operation}. Reconnect Google.")
+    if response.status_code == 404:
+        raise ToolError("That calendar event no longer exists.")
+    if response.status_code >= 400:
+        raise ToolError(f"Google Calendar could not {operation}: {response.text[:240]}")
+
+
+async def _calendar_token(context: ToolContext) -> str:
+    return await google_oauth.valid_access_token(
+        context.session, context.settings, context.http, context.user_id
+    )
+
+
+async def _event_timezone(context: ToolContext, requested: str | None) -> str:
+    if requested:
+        resolve_zone(requested)
+        return requested
+    return await google_oauth.connection_timezone(
+        context.session,
+        context.user_id,
+        default=context.settings.default_timezone,
+    )
+
+
+async def _fetch_event(
+    context: ToolContext,
+    event_id: str,
+    *,
+    token: str | None = None,
+) -> dict[str, Any]:
+    access_token = token or await _calendar_token(context)
+    response = await google_request(
+        context.http,
+        "GET",
+        f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    _calendar_error(response, "read the event")
+    payload = response.json()
+    if payload.get("status") == "cancelled":
+        raise ToolError("That calendar event has already been cancelled.")
+    return payload
+
+
+def _event_start(event: dict[str, Any]) -> str:
+    start = event.get("start") or {}
+    return str(start.get("dateTime") or start.get("date") or "unknown time")
+
+
+def _event_end(event: dict[str, Any]) -> str:
+    end = event.get("end") or {}
+    return str(end.get("dateTime") or end.get("date") or "unknown time")
+
+
+def _event_attendees(event: dict[str, Any]) -> list[str]:
+    return [
+        str(item.get("email"))
+        for item in event.get("attendees", []) or []
+        if isinstance(item, dict) and item.get("email")
+    ]
+
+
+def _readable_time(value: str, timezone_name: str) -> str:
+    if "T" not in value:
+        return f"{value} (all day)"
+    local = _parse_iso(value, timezone_name).astimezone(resolve_zone(timezone_name))
+    return local.strftime("%d %B %Y at %I:%M %p %Z")
+
+
+def _snapshot(args: BaseModel) -> dict[str, Any]:
+    extra = args.model_extra or {}
+    value = extra.get("_approval_snapshot")
+    if not isinstance(value, dict):
+        raise ToolError("This action is missing its verified approval snapshot. Prepare it again.")
+    return value
 
 
 def _find_open_slots(
@@ -115,8 +240,8 @@ def _find_open_slots(
             and slot_end <= workday_end
         )
         if within_workday:
-            slot_start_utc = cursor.astimezone(timezone.utc)
-            slot_end_utc = slot_end.astimezone(timezone.utc)
+            slot_start_utc = cursor.astimezone(UTC)
+            slot_end_utc = slot_end.astimezone(UTC)
             overlap = any(
                 slot_start_utc < busy_end and slot_end_utc > busy_start
                 for busy_start, busy_end in busy_ranges
@@ -158,8 +283,8 @@ def _event_window(
     if end_local <= start_local:
         raise ToolError("Calendar range end must be after its start.")
     return (
-        start_local.astimezone(timezone.utc),
-        end_local.astimezone(timezone.utc),
+        start_local.astimezone(UTC),
+        end_local.astimezone(UTC),
         zone_name,
         label,
     )
@@ -174,7 +299,7 @@ async def list_calendar_events(context: ToolContext, args: ListEventsArgs) -> To
         context.user_id,
         default=context.settings.default_timezone,
     )
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     start, end, zone_name, label = _event_window(
         args,
         now=now,
@@ -256,6 +381,175 @@ async def list_calendar_events(context: ToolContext, args: ListEventsArgs) -> To
     )
 
 
+async def prepare_create_calendar_event(
+    context: ToolContext, args: CreateEventArgs
+) -> ActionProposal:
+    zone_name = await _event_timezone(context, args.timezone)
+    zone = resolve_zone(zone_name)
+    start = _parse_iso(args.start_at, zone_name)
+    if start < datetime.now(tz=UTC) - timedelta(minutes=5):
+        raise ToolError("Calendar events cannot be created in the past. Confirm the intended date.")
+    normalized = args.model_dump()
+    normalized["start_at"] = start.astimezone(zone).isoformat()
+    normalized["timezone"] = zone_name
+    attendees = f" with {', '.join(args.attendees)}" if args.attendees else ""
+    meet = " and add Google Meet" if args.add_meet_link else ""
+    preview = (
+        f"Create calendar event '{args.title}' on "
+        f"{_readable_time(normalized['start_at'], zone_name)} for "
+        f"{args.duration_minutes} minutes{attendees}{meet}."
+    )
+    return ActionProposal(
+        arguments=normalized,
+        preview=preview,
+        idempotency_key=(
+            "calendar-create:"
+            + hashlib.sha256(args.event_id.encode("utf-8")).hexdigest()
+        ),
+    )
+
+
+async def prepare_update_calendar_event(
+    context: ToolContext, args: UpdateEventArgs
+) -> ActionProposal:
+    token = await _calendar_token(context)
+    current = await _fetch_event(context, args.event_id, token=token)
+    timezone_name = await _event_timezone(
+        context,
+        args.timezone or (current.get("start") or {}).get("timeZone"),
+    )
+    patch: dict[str, Any] = {}
+    changes: list[str] = []
+    fields = args.model_fields_set
+
+    if "title" in fields and args.title is not None:
+        patch["summary"] = args.title
+        changes.append(f"title to '{args.title}'")
+    if "description" in fields:
+        patch["description"] = args.description or ""
+        changes.append("description")
+    if "attendees" in fields:
+        attendees = args.attendees or []
+        patch["attendees"] = [{"email": email} for email in attendees]
+        changes.append(
+            "attendees to " + (", ".join(attendees) if attendees else "none")
+        )
+
+    if "start_at" in fields or "duration_minutes" in fields:
+        current_start_text = _event_start(current)
+        current_end_text = _event_end(current)
+        if "T" not in current_start_text or "T" not in current_end_text:
+            raise ToolError("Changing the time of all-day events is not supported yet.")
+        start = (
+            _parse_iso(args.start_at, timezone_name)
+            if args.start_at
+            else _parse_iso(current_start_text, timezone_name)
+        )
+        if start < datetime.now(tz=UTC) - timedelta(minutes=5):
+            raise ToolError("Calendar events cannot be moved into the past.")
+        current_duration = _parse_iso(current_end_text, timezone_name) - _parse_iso(
+            current_start_text, timezone_name
+        )
+        duration = timedelta(minutes=args.duration_minutes) if args.duration_minutes else current_duration
+        if duration <= timedelta(0) or duration > timedelta(hours=8):
+            raise ToolError("The updated event duration must be between 5 minutes and 8 hours.")
+        zone = resolve_zone(timezone_name)
+        end = start + duration
+        patch["start"] = {
+            "dateTime": start.astimezone(zone).isoformat(),
+            "timeZone": timezone_name,
+        }
+        patch["end"] = {
+            "dateTime": end.astimezone(zone).isoformat(),
+            "timeZone": timezone_name,
+        }
+        changes.append(
+            "time to "
+            + _readable_time(patch["start"]["dateTime"], timezone_name)
+            + f" for {round(duration.total_seconds() / 60)} minutes"
+        )
+
+    if not patch:
+        raise ToolError("No calendar event changes were provided.")
+
+    snapshot = {
+        "event_id": args.event_id,
+        "etag": current.get("etag"),
+        "original_title": current.get("summary") or "Untitled",
+        "original_start": _event_start(current),
+        "patch": patch,
+        "timezone": timezone_name,
+    }
+    arguments = args.model_dump()
+    arguments["_approval_snapshot"] = snapshot
+    preview = (
+        f"Update calendar event '{snapshot['original_title']}' at "
+        f"{_readable_time(snapshot['original_start'], timezone_name)}: "
+        + "; ".join(changes)
+        + "."
+    )
+    digest = hashlib.sha256(
+        json.dumps(patch, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return ActionProposal(
+        arguments=arguments,
+        preview=preview,
+        idempotency_key=(
+            "calendar-update:"
+            + hashlib.sha256(
+                f"{args.event_id}:{current.get('etag')}:{digest}".encode()
+            ).hexdigest()
+        ),
+    )
+
+
+async def prepare_delete_calendar_event(
+    context: ToolContext, args: DeleteEventArgs
+) -> ActionProposal:
+    token = await _calendar_token(context)
+    selected = await _fetch_event(context, args.event_id, token=token)
+    target_id = args.event_id
+    is_series = False
+    recurring_id = selected.get("recurringEventId")
+    if args.delete_series and recurring_id:
+        target_id = str(recurring_id)
+        selected = await _fetch_event(context, target_id, token=token)
+        is_series = True
+    elif args.delete_series and selected.get("recurrence"):
+        is_series = True
+
+    timezone_name = await _event_timezone(
+        context, (selected.get("start") or {}).get("timeZone")
+    )
+    snapshot = {
+        "event_id": target_id,
+        "etag": selected.get("etag"),
+        "title": selected.get("summary") or "Untitled",
+        "start": _event_start(selected),
+        "attendees": _event_attendees(selected),
+        "is_series": is_series,
+    }
+    arguments = args.model_dump()
+    arguments["event_id"] = target_id
+    arguments["_approval_snapshot"] = snapshot
+    scope = "entire recurring series" if is_series else "calendar event"
+    notify = " Attendees will be notified." if snapshot["attendees"] and args.notify_attendees else ""
+    preview = (
+        f"Delete {scope} '{snapshot['title']}' at "
+        f"{_readable_time(snapshot['start'], timezone_name)}.{notify}"
+    )
+    return ActionProposal(
+        arguments=arguments,
+        preview=preview,
+        idempotency_key=(
+            "calendar-delete:"
+            + hashlib.sha256(
+                f"{target_id}:{selected.get('etag')}:{int(args.notify_attendees)}".encode()
+            ).hexdigest()
+        ),
+    )
+
+
 async def create_calendar_event(context: ToolContext, args: CreateEventArgs) -> ToolResult:
     token = await google_oauth.valid_access_token(
         context.session, context.settings, context.http, context.user_id
@@ -267,7 +561,7 @@ async def create_calendar_event(context: ToolContext, args: CreateEventArgs) -> 
     )
     zone = resolve_zone(zone_name)
     start = _parse_iso(args.start_at, zone_name)
-    if start < datetime.now(tz=timezone.utc) - timedelta(minutes=5):
+    if start < datetime.now(tz=UTC) - timedelta(minutes=5):
         raise ToolError("Calendar events cannot be created in the past. Confirm the intended date.")
     end = start + timedelta(minutes=args.duration_minutes)
     body: dict = {
@@ -349,11 +643,156 @@ async def create_calendar_event(context: ToolContext, args: CreateEventArgs) -> 
     )
 
 
+def _event_matches_patch(event: dict[str, Any], patch: dict[str, Any]) -> bool:
+    for key, expected in patch.items():
+        if key == "attendees":
+            actual = set(_event_attendees(event))
+            wanted = {
+                str(item.get("email"))
+                for item in expected
+                if isinstance(item, dict) and item.get("email")
+            }
+            if actual != wanted:
+                return False
+        elif key in {"start", "end"}:
+            actual_time = (event.get(key) or {}).get("dateTime")
+            expected_time = (expected or {}).get("dateTime")
+            if not actual_time or not expected_time:
+                return False
+            if _parse_iso(actual_time) != _parse_iso(expected_time):
+                return False
+        elif event.get(key, "") != expected:
+            return False
+    return True
+
+
+async def update_calendar_event(context: ToolContext, args: UpdateEventArgs) -> ToolResult:
+    snapshot = _snapshot(args)
+    event_id = str(snapshot.get("event_id") or args.event_id)
+    expected_etag = snapshot.get("etag")
+    patch = snapshot.get("patch")
+    if not isinstance(patch, dict) or not patch:
+        raise ToolError("The approved calendar update is incomplete. Prepare it again.")
+
+    token = await _calendar_token(context)
+    current = await _fetch_event(context, event_id, token=token)
+    if expected_etag and current.get("etag") != expected_etag:
+        raise ToolError(
+            "The calendar event changed after you reviewed it. Please review and approve it again."
+        )
+
+    response: httpx.Response | None = None
+    try:
+        response = await google_request(
+            context.http,
+            "PATCH",
+            f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+            params={"sendUpdates": "all" if "attendees" in patch else "none"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                **({"If-Match": str(expected_etag)} if expected_etag else {}),
+            },
+            json=patch,
+        )
+    except httpx.TransportError:
+        # The write may have reached Google. Verify state before reporting an
+        # ambiguous result and never issue a second PATCH automatically.
+        pass
+    if response is not None:
+        if response.status_code == 412:
+            raise ToolError(
+                "The calendar event changed after you reviewed it. Please review and approve it again."
+            )
+        if response.status_code < 500:
+            _calendar_error(response, "update the event")
+    verified = await _fetch_event(context, event_id, token=token)
+    if not _event_matches_patch(verified, patch):
+        if response is None or response.status_code >= 500:
+            raise ToolError(
+                "Google returned an ambiguous calendar update result. I did not retry; "
+                "check the event before trying again."
+            )
+        raise ToolError("Calendar reported success, but the updated event could not be verified.")
+    return ToolResult(
+        summary=(
+            f"Verified calendar event '{verified.get('summary') or 'Untitled'}' was updated."
+        ),
+        data={
+            "id": event_id,
+            "htmlLink": verified.get("htmlLink"),
+            "verified": True,
+        },
+    )
+
+
+async def delete_calendar_event(context: ToolContext, args: DeleteEventArgs) -> ToolResult:
+    snapshot = _snapshot(args)
+    event_id = str(snapshot.get("event_id") or args.event_id)
+    expected_etag = snapshot.get("etag")
+    token = await _calendar_token(context)
+
+    current_response = await google_request(
+        context.http,
+        "GET",
+        f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if current_response.status_code in {404, 410}:
+        return ToolResult(
+            summary=f"Verified calendar event '{snapshot.get('title') or 'Untitled'}' is already deleted.",
+            data={"id": event_id, "verified": True, "already_deleted": True},
+        )
+    _calendar_error(current_response, "read the event before deletion")
+    current = current_response.json()
+    if expected_etag and current.get("etag") != expected_etag:
+        raise ToolError(
+            "The calendar event changed after you reviewed it. Please review and approve deletion again."
+        )
+
+    attendees = snapshot.get("attendees") or []
+    response = await google_request(
+        context.http,
+        "DELETE",
+        f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+        params={
+            "sendUpdates": "all" if attendees and args.notify_attendees else "none"
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+            **({"If-Match": str(expected_etag)} if expected_etag else {}),
+        },
+    )
+    if response.status_code == 412:
+        raise ToolError(
+            "The calendar event changed after you reviewed it. Please review and approve deletion again."
+        )
+    if response.status_code not in {200, 204, 404, 410}:
+        _calendar_error(response, "delete the event")
+
+    verify = await google_request(
+        context.http,
+        "GET",
+        f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if verify.status_code not in {404, 410} and not (
+        verify.status_code == 200 and verify.json().get("status") == "cancelled"
+    ):
+        raise ToolError("Calendar deletion was not verified.")
+    title = str(snapshot.get("title") or "Untitled")
+    scope = "recurring series" if snapshot.get("is_series") else "event"
+    return ToolResult(
+        summary=f"Verified calendar {scope} '{title}' was deleted.",
+        data={"id": event_id, "verified": True, "deleted": True},
+    )
+
+
 async def find_free_slots(context: ToolContext, args: FindFreeSlotsArgs) -> ToolResult:
     token = await google_oauth.valid_access_token(
         context.session, context.settings, context.http, context.user_id
     )
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     end = now + timedelta(days=args.days_ahead)
     zone_name = args.timezone or await google_oauth.connection_timezone(
         context.session,
@@ -421,6 +860,31 @@ CREATE_SPEC = ToolSpec(
     args_model=CreateEventArgs,
     handler=create_calendar_event,
     confirmation_required=True,
+    prepare=prepare_create_calendar_event,
+)
+
+UPDATE_SPEC = ToolSpec(
+    name="update_calendar_event",
+    description=(
+        "Update an existing Google Calendar event selected by event_id. First list events "
+        "to resolve the exact id. Requires confirmation bound to the current event version."
+    ),
+    args_model=UpdateEventArgs,
+    handler=update_calendar_event,
+    confirmation_required=True,
+    prepare=prepare_update_calendar_event,
+)
+
+DELETE_SPEC = ToolSpec(
+    name="delete_calendar_event",
+    description=(
+        "Delete an existing Google Calendar event selected by event_id. First list events "
+        "and clarify one occurrence versus the whole recurring series. Requires confirmation."
+    ),
+    args_model=DeleteEventArgs,
+    handler=delete_calendar_event,
+    confirmation_required=True,
+    prepare=prepare_delete_calendar_event,
 )
 
 FREE_SPEC = ToolSpec(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.tables import Base, OAuthConnection, utcnow
@@ -30,10 +31,9 @@ def test_authorization_url_uses_incremental_least_privilege_scopes(settings) -> 
     assert query["include_granted_scopes"] == ["true"]
     assert query["state"] == ["state-1"]
     assert "https://www.googleapis.com/auth/calendar.events" in scopes
-    assert "https://www.googleapis.com/auth/gmail.readonly" in scopes
-    assert "https://www.googleapis.com/auth/gmail.compose" in scopes
+    assert "https://www.googleapis.com/auth/gmail.modify" in scopes
+    assert "https://mail.google.com/" not in scopes
     assert "https://www.googleapis.com/auth/calendar" not in scopes
-    assert "https://www.googleapis.com/auth/gmail.modify" not in scopes
 
 
 async def test_oauth_state_is_durable_one_time_and_user_bound(tmp_path) -> None:
@@ -131,3 +131,32 @@ async def test_google_requests_do_not_retry_non_idempotent_posts() -> None:
         assert calls == 1
     finally:
         await http.aclose()
+
+
+async def test_existing_connection_without_modify_scope_must_reconnect(
+    settings,
+    tmp_path,
+) -> None:
+    session, engine = await _session(tmp_path)
+    session.add(
+        OAuthConnection(
+            user_id="user-1",
+            provider="google",
+            scopes=(
+                "https://www.googleapis.com/auth/calendar.events "
+                "https://www.googleapis.com/auth/gmail.readonly "
+                "https://www.googleapis.com/auth/gmail.compose"
+            ),
+            access_token_encrypted=encrypt_secret(settings, "access-token"),
+            expires_at=utcnow(),
+        )
+    )
+    await session.commit()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    try:
+        with pytest.raises(google_oauth.GoogleAuthError, match="permissions have changed"):
+            await google_oauth.valid_access_token(session, settings, http, "user-1")
+    finally:
+        await http.aclose()
+        await session.close()
+        await engine.dispose()

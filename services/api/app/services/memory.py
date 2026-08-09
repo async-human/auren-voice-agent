@@ -19,6 +19,7 @@ from app.models.tables import (
     Memory,
     MemoryEvent,
     MemoryEvidence,
+    OAuthConnection,
     User,
     UserProfile,
     utcnow,
@@ -83,6 +84,8 @@ def build_greeting(display_name: str | None, last_summary: str | None) -> str:
 
 def build_instructions_block(
     display_name: str | None,
+    email: str | None,
+    google_account_email: str | None,
     profile_summary: str | None,
     preferences: str | None,
     memories: list[Memory],
@@ -93,6 +96,10 @@ def build_instructions_block(
     ]
     if display_name:
         lines.append(f"- Name: {display_name}")
+    if email:
+        lines.append(f"- Authenticated sign-in email: {email}")
+    if google_account_email:
+        lines.append(f"- Connected Google account email: {google_account_email}")
     if profile_summary:
         lines.append(f"- Profile: {profile_summary}")
     if preferences:
@@ -115,6 +122,12 @@ def build_instructions_block(
         "If they ask what you discussed last time, answer from 'Previous conversation' "
         "when present; otherwise call recall with query 'last conversation'. "
         "If they ask you to forget something, use the forget tool."
+        " When the user says 'email me', 'invite me', or 'my email', use the "
+        "authenticated sign-in email when present. If the connected Google account "
+        "email differs, briefly ask which address to use. If no recipient was named, "
+        "confirm the known address or ask for a different one; never invent an address. "
+        "Creating an event on the user's primary calendar does not require adding their "
+        "own address as an attendee unless they explicitly ask to invite themselves."
     )
     return "\n".join(lines)
 
@@ -157,6 +170,12 @@ async def get_user(session: AsyncSession, user_id: str) -> User | None:
 async def get_context(session: AsyncSession, user_id: str) -> MemoryContextResponse:
     user = await get_user(session, user_id)
     profile = await session.get(UserProfile, user_id)
+    google_connection = await session.scalar(
+        select(OAuthConnection).where(
+            OAuthConnection.user_id == user_id,
+            OAuthConnection.provider == "google",
+        )
+    )
 
     memories = (
         await session.scalars(
@@ -172,6 +191,8 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
     last_session = await get_last_session(session, user_id)
 
     display_name = user.display_name if user else None
+    email = user.email if user else None
+    google_account_email = google_connection.account_email if google_connection else None
     profile_summary = profile.summary if profile else None
     preferences = profile.preferences if profile else None
     last_summary = last_session.summary if last_session else None
@@ -179,13 +200,21 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
     return MemoryContextResponse(
         user_id=user_id,
         display_name=display_name,
+        email=email,
+        google_account_email=google_account_email,
         profile_summary=profile_summary,
         preferences=preferences,
         memories=[_memory_item(memory) for memory in memories],
         last_session_summary=last_summary,
         greeting=build_greeting(display_name, last_summary),
         instructions_block=build_instructions_block(
-            display_name, profile_summary, preferences, list(memories), last_summary
+            display_name,
+            email,
+            google_account_email,
+            profile_summary,
+            preferences,
+            list(memories),
+            last_summary,
         ),
     )
 

@@ -172,6 +172,43 @@ class ToolActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["status"], "failed")
         self.assertIsInstance(events[-1]["durationMs"], int)
 
+    async def test_failed_confirmation_marks_original_pending_activity_failed(self) -> None:
+        gateway, events = await self.make_gateway(
+            {
+                "ok": True,
+                "summary": "Confirmation required.",
+                "data": {"pending": True, "action_id": "action-failed"},
+            },
+        )
+        try:
+            await gateway.invoke("create_calendar_event", "user-1", {})
+            original_invocation_id = str(events[-1]["invocationId"])
+            await gateway.client.aclose()
+            gateway._client = httpx.AsyncClient(  # noqa: SLF001
+                base_url="https://tools.example",
+                transport=httpx.MockTransport(
+                    lambda _request: httpx.Response(
+                        200,
+                        json={
+                            "ok": False,
+                            "summary": "Confirmed, but execution failed.",
+                        },
+                    )
+                ),
+            )
+            with self.assertRaises(ToolError):
+                await gateway.invoke("confirm_pending_action", "user-1", {})
+        finally:
+            await gateway.aclose()
+
+        resolved = [
+            event for event in events if event["invocationId"] == original_invocation_id
+        ]
+        self.assertEqual(
+            [event["status"] for event in resolved],
+            ["started", "awaiting_approval", "failed"],
+        )
+
     async def test_malformed_gateway_response_still_emits_failed(self) -> None:
         gateway, events = await self.make_gateway(["unexpected"])
 

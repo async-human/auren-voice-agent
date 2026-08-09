@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
@@ -32,8 +32,10 @@ SCOPES = (
     "email",
     "profile",
     "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
+    # gmail.modify is the narrowest Gmail scope that supports reading,
+    # drafting/sending, and reversible move-to-Trash operations. It explicitly
+    # does not permit immediate permanent deletion.
+    "https://www.googleapis.com/auth/gmail.modify",
 )
 
 REQUIRED_DATA_SCOPES = frozenset(SCOPES[3:])
@@ -239,9 +241,8 @@ async def consume_oauth_state(session: AsyncSession, *, state: str) -> str | Non
         return None
     expires = row.expires_at
     if expires.tzinfo is None:
-        from datetime import timezone
 
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
     return row.user_id if expires > utcnow() else None
 
 
@@ -296,11 +297,19 @@ async def valid_access_token(
             "Google is not connected. Ask the user to connect Google in Auren settings."
         )
 
+    granted_scopes = set((connection.scopes or "").split())
+    missing_scopes = REQUIRED_DATA_SCOPES - granted_scopes
+    if missing_scopes:
+        await session.commit()
+        raise GoogleAuthError(
+            "Google permissions have changed. Ask the user to disconnect and reconnect "
+            "Google in Auren settings."
+        )
+
     expires = connection.expires_at
     if expires is not None and expires.tzinfo is None:
-        from datetime import timezone
 
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
 
     if expires is None or expires > utcnow():
         try:

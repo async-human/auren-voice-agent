@@ -33,7 +33,7 @@ export default function ConnectionsPanel({
 
   const apiBase = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (clearError = true) => {
     if (!apiBase) {
       setError("NEXT_PUBLIC_API_URL is not configured");
       return;
@@ -54,7 +54,7 @@ export default function ConnectionsPanel({
         const body = await pendingRes.json();
         setPending(body.actions || []);
       }
-      setError(null);
+      if (clearError) setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load connections");
     }
@@ -113,10 +113,13 @@ export default function ConnectionsPanel({
         throw new Error(body.detail || "Action could not be resolved");
       }
       onActionResolved?.(id, decision);
-      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action failed");
     } finally {
+      // Confirmation can legitimately fail after the backend marks a stale or
+      // invalid proposal as failed. Always refresh so it does not remain as a
+      // misleading, repeatedly-confirmable pending action in the UI.
+      await refresh(false);
       setBusy(false);
     }
   }
@@ -133,8 +136,8 @@ export default function ConnectionsPanel({
         </button>
       </div>
       <p className="memoryLead">
-        Connect Google so Auren can schedule meetings and send email after your
-        confirmation — not just tell you how.
+        Connect Google so Auren can manage calendar events and email with clear
+        approval before consequential changes — not just tell you how.
       </p>
 
       {error && <p className="failure">{error}</p>}
