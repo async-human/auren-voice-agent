@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.services import approvals, google_oauth
+from app.services import approvals, artifacts as artifact_service, google_oauth
 from app.services.action_payloads import protect_arguments
 from app.services.google_http import request as google_request
 from app.tools.base import ActionProposal, ToolContext, ToolError, ToolResult, ToolSpec
@@ -33,6 +33,13 @@ def _clean_subject(value: str) -> str:
     cleaned = value.strip()
     if "\r" in cleaned or "\n" in cleaned:
         raise ValueError("must not contain line breaks")
+    return cleaned
+
+
+def _clean_artifact_ids(value: list[str]) -> list[str]:
+    cleaned = list(dict.fromkeys(item.strip() for item in value))
+    if any(not re.fullmatch(r"[0-9a-f]{32}", item) for item in cleaned):
+        raise ValueError("artifact ids must be 32-character lowercase hexadecimal ids")
     return cleaned
 
 
@@ -79,9 +86,15 @@ class DraftEmailArgs(BaseModel):
         max_length=128,
         description="Existing Gmail draft id when revising a prior draft.",
     )
+    artifact_ids: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Generated Auren artifact ids to attach to this Gmail draft.",
+    )
 
     _validate_to = field_validator("to")(_clean_address)
     _validate_subject = field_validator("subject")(_clean_subject)
+    _validate_artifacts = field_validator("artifact_ids")(_clean_artifact_ids)
 
 
 class SendEmailArgs(BaseModel):
@@ -96,9 +109,11 @@ class SendEmailArgs(BaseModel):
     body: str = Field(min_length=1, max_length=20000)
     draft_id: str | None = Field(default=None, max_length=128)
     draft_content_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    artifact_ids: list[str] = Field(default_factory=list, max_length=10)
 
     _validate_to = field_validator("to")(_clean_address)
     _validate_subject = field_validator("subject")(_clean_subject)
+    _validate_artifacts = field_validator("artifact_ids")(_clean_artifact_ids)
 
     @model_validator(mode="after")
     def _draft_version_is_complete(self) -> SendEmailArgs:
@@ -119,13 +134,72 @@ def _rfc_message_id(operation_id: str) -> str:
     return f"<auren-{operation_id}@auren.local>"
 
 
-def _mime_raw(to: str, subject: str, body: str, operation_id: str) -> str:
+def _mime_raw(
+    to: str,
+    subject: str,
+    body: str,
+    operation_id: str,
+    attachments: list[tuple[str, str, bytes]] | None = None,
+) -> str:
     message = EmailMessage()
     message["To"] = to
     message["Subject"] = subject
     message["Message-ID"] = _rfc_message_id(operation_id)
     message.set_content(body)
+    for filename, mime_type, content in attachments or []:
+        maintype, _, subtype = mime_type.partition("/")
+        subtype = subtype.split(";", 1)[0] or "octet-stream"
+        message.add_attachment(
+            content,
+            maintype=maintype or "application",
+            subtype=subtype,
+            filename=filename,
+        )
     return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+
+
+async def _load_attachments(
+    context: ToolContext,
+    artifact_ids: list[str],
+) -> list[tuple[str, str, bytes]]:
+    attachments: list[tuple[str, str, bytes]] = []
+    total = 0
+    seen: set[str] = set()
+    for artifact_id in artifact_ids:
+        if artifact_id in seen:
+            continue
+        seen.add(artifact_id)
+        artifact = await artifact_service.get_artifact(
+            context.session, context.user_id, artifact_id
+        )
+        if artifact is None:
+            raise ToolError(f"Attachment artifact {artifact_id} was not found.")
+        try:
+            content = await artifact_service.read_artifact(context.settings, artifact)
+        except artifact_service.ArtifactError as error:
+            raise ToolError(str(error)) from error
+        total += len(content)
+        if total > context.settings.artifact_email_max_bytes:
+            raise ToolError(
+                "The selected attachments exceed Auren's email attachment size limit."
+            )
+        attachments.append((artifact.filename, artifact.mime_type, content))
+    return attachments
+
+
+def _attachment_filenames(payload: dict[str, Any]) -> set[str]:
+    found: set[str] = set()
+
+    def visit(part: dict[str, Any]) -> None:
+        filename = part.get("filename")
+        if isinstance(filename, str) and filename:
+            found.add(filename)
+        for child in part.get("parts", []) or []:
+            if isinstance(child, dict):
+                visit(child)
+
+    visit(payload)
+    return found
 
 
 def _headers(payload: dict[str, Any]) -> dict[str, str]:
@@ -387,7 +461,14 @@ async def draft_email(context: ToolContext, args: DraftEmailArgs) -> ToolResult:
     token = await google_oauth.valid_access_token(
         context.session, context.settings, context.http, context.user_id
     )
-    raw = _mime_raw(args.to, args.subject, args.body, args.operation_id)
+    attachments = await _load_attachments(context, args.artifact_ids)
+    raw = _mime_raw(
+        args.to,
+        args.subject,
+        args.body,
+        args.operation_id,
+        attachments,
+    )
     url = f"{GMAIL_BASE}/drafts" + (f"/{args.draft_id}" if args.draft_id else "")
     response = await google_request(
         context.http,
@@ -432,6 +513,7 @@ async def draft_email(context: ToolContext, args: DraftEmailArgs) -> ToolResult:
         "body": args.body,
         "draft_id": draft_id,
         "draft_content_hash": content_hash,
+        "artifact_ids": args.artifact_ids,
     }
     action = await approvals.propose_action(
         context.session,
@@ -440,18 +522,23 @@ async def draft_email(context: ToolContext, args: DraftEmailArgs) -> ToolResult:
         arguments=protect_arguments(context.settings, "send_email", send_arguments),
         preview=(
             f"Send Gmail draft {draft_id} to {args.to} with subject '{args.subject}'. "
-            "The body is encrypted in Auren's approval record."
+            f"Attachments: {len(attachments)}. The body is encrypted in Auren's approval record."
         ),
         idempotency_key=(
             "gmail-draft:"
             + hashlib.sha256(f"{draft_id}:{content_hash}".encode()).hexdigest()
         ),
     )
-    preview = f"To: {args.to}\nSubject: {args.subject}\n\n{args.body}"
+    attached = "\nAttachments: " + ", ".join(item[0] for item in attachments) if attachments else ""
+    preview = f"To: {args.to}\nSubject: {args.subject}{attached}\n\n{args.body}"
+    attachment_phrase = (
+        f" with {len(attachments)} attachment(s)" if attachments else ""
+    )
     return ToolResult(
         summary=(
             f"I created and verified a Gmail draft to {args.to} with subject "
-            f"'{args.subject}'. It has not been sent. Review it, then say confirm to send "
+            f"'{args.subject}'{attachment_phrase}. It has not been sent. "
+            "Review it, then say confirm to send "
             "this exact version or cancel to keep it as a draft."
         ),
         data={
@@ -462,6 +549,10 @@ async def draft_email(context: ToolContext, args: DraftEmailArgs) -> ToolResult:
             "content_hash": content_hash,
             "preview": preview,
             "ready_to_send": True,
+            "artifacts": [
+                {"filename": filename, "mime_type": mime_type, "size_bytes": len(content)}
+                for filename, mime_type, content in attachments
+            ],
         },
     )
 
@@ -471,6 +562,7 @@ async def send_email(context: ToolContext, args: SendEmailArgs) -> ToolResult:
         context.session, context.settings, context.http, context.user_id
     )
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    attachments: list[tuple[str, str, bytes]] = []
     if args.draft_id:
         current = await google_request(
             context.http,
@@ -494,12 +586,21 @@ async def send_email(context: ToolContext, args: SendEmailArgs) -> ToolResult:
             json={"id": args.draft_id},
         )
     else:
+        attachments = await _load_attachments(context, args.artifact_ids)
         response = await google_request(
             context.http,
             "POST",
             f"{GMAIL_BASE}/messages/send",
             headers=headers,
-            json={"raw": _mime_raw(args.to, args.subject, args.body, args.operation_id)},
+            json={
+                "raw": _mime_raw(
+                    args.to,
+                    args.subject,
+                    args.body,
+                    args.operation_id,
+                    attachments,
+                )
+            },
         )
     if response.status_code >= 500:
         # Never blindly retry a send. Search by our stable RFC Message-ID to
@@ -530,7 +631,10 @@ async def send_email(context: ToolContext, args: SendEmailArgs) -> ToolResult:
         context.http,
         "GET",
         f"{GMAIL_BASE}/messages/{message_id}",
-        params={"format": "metadata", "metadataHeaders": ["To", "Subject"]},
+        params={
+            "format": "full" if args.artifact_ids else "metadata",
+            "metadataHeaders": ["To", "Subject"],
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     _raise_gmail_error(verify.status_code, verify.text, "verify the sent email")
@@ -539,8 +643,20 @@ async def send_email(context: ToolContext, args: SendEmailArgs) -> ToolResult:
         "to", ""
     ).lower():
         raise ToolError("Gmail sent a message, but its verified recipient or subject differed.")
+    if attachments:
+        expected = {filename for filename, _mime_type, _content in attachments}
+        actual = _attachment_filenames(verify.json().get("payload") or {})
+        if not expected <= actual:
+            raise ToolError("Gmail sent the message, but attachment verification failed.")
     return ToolResult(
-        summary=f"Verified email sent to {args.to} with subject '{args.subject}'.",
+        summary=(
+            f"Verified email sent to {args.to} with subject '{args.subject}'"
+            + (
+                f" and {len(args.artifact_ids)} attachment(s)."
+                if args.artifact_ids
+                else "."
+            )
+        ),
         data={
             "id": message_id,
             "threadId": sent.get("threadId"),

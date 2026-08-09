@@ -30,6 +30,14 @@ async def list_tools() -> list[ToolDescription]:
             description=spec.description,
             parameters=spec.parameters_schema(),
             confirmation_required=spec.confirmation_required,
+            domain=registry.CAPABILITIES[spec.name].domain,
+            operation=registry.CAPABILITIES[spec.name].operation,
+            risk=registry.CAPABILITIES[spec.name].risk,
+            reversible=registry.CAPABILITIES[spec.name].reversible,
+            parallel_safe=registry.CAPABILITIES[spec.name].parallel_safe,
+            requires_connection=registry.CAPABILITIES[spec.name].requires_connection,
+            produces=list(registry.CAPABILITIES[spec.name].produces),
+            version=registry.CAPABILITIES[spec.name].version,
         )
         for spec in registry.SPECS
     ]

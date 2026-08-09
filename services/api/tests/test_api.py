@@ -141,7 +141,44 @@ async def test_tool_listing_exposes_expected_tools(client: AsyncClient) -> None:
         "update_workflow",
         "complete_workflow",
         "schedule_followup",
+        "create_document",
+        "create_spreadsheet",
+        "create_presentation",
+        "list_artifacts",
     }
+    for tool in response.json():
+        assert tool["domain"]
+        assert tool["operation"]
+        assert tool["risk"] in {"read", "write", "consequential", "destructive"}
+        assert isinstance(tool["parallel_safe"], bool)
+
+
+async def test_authenticated_capability_catalog_is_complete(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    response = await client.get("/v1/capabilities", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    catalog_tools = {
+        tool["name"]
+        for group in body["capabilities"]
+        for tool in group["tools"]
+    }
+    gateway_tools = {tool["name"] for tool in (await client.get("/v1/tools")).json()}
+    assert catalog_tools == gateway_tools
+    assert {group["domain"] for group in body["capabilities"]} >= {
+        "artifacts",
+        "calendar",
+        "gmail",
+        "research",
+        "workflows",
+    }
+
+
+async def test_capability_catalog_requires_authentication(client: AsyncClient) -> None:
+    response = await client.get("/v1/capabilities")
+    assert response.status_code == 401
 
 
 async def _mint(client: AsyncClient, token: str) -> str:

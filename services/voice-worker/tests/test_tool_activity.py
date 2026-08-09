@@ -85,6 +85,34 @@ class ToolActivityTests(unittest.IsolatedAsyncioTestCase):
             "To: person@example.com · Subject: No subject",
         )
 
+    async def test_created_artifact_is_linked_without_exposing_content(self) -> None:
+        gateway, events = await self.make_gateway(
+            {
+                "ok": True,
+                "summary": "Created report.docx.",
+                "data": {
+                    "artifact": {
+                        "id": "a" * 32,
+                        "filename": "report.docx",
+                        "format": "docx",
+                        "download_url": f"/v1/artifacts/{'a' * 32}/download",
+                    }
+                },
+            },
+        )
+        try:
+            await gateway.invoke(
+                "create_document",
+                "user-1",
+                {"title": "Report", "content": "PRIVATE REPORT CONTENT", "format": "docx"},
+            )
+        finally:
+            await gateway.aclose()
+
+        self.assertEqual(events[-1]["artifactId"], "a" * 32)
+        self.assertEqual(events[-1]["artifactFilename"], "report.docx")
+        self.assertNotIn("PRIVATE REPORT CONTENT", json.dumps(events))
+
     async def test_email_activity_never_publishes_the_message_body(self) -> None:
         gateway, events = await self.make_gateway(
             {

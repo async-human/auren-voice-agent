@@ -39,6 +39,18 @@ def redact_arguments(tool: str, arguments: dict[str, Any] | None) -> dict[str, A
     redacted = dict(arguments)
     if tool in {"draft_email", "send_email"} and "body" in redacted:
         redacted["body"] = "[encrypted or omitted]"
+    if tool == "create_document" and "content" in redacted:
+        redacted["content"] = "[artifact content omitted]"
+    if tool == "create_spreadsheet" and "rows" in redacted:
+        rows = redacted.get("rows")
+        redacted["rows"] = (
+            f"[{len(rows)} row(s) omitted]" if isinstance(rows, list) else "[omitted]"
+        )
+    if tool == "create_presentation" and "slides" in redacted:
+        slides = redacted.get("slides")
+        redacted["slides"] = (
+            f"[{len(slides)} slide(s) omitted]" if isinstance(slides, list) else "[omitted]"
+        )
     return redacted
 
 

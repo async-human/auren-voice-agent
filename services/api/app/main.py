@@ -13,7 +13,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_schema, create_session_factory
-from app.routers import actions, connections, health, memory, page_context, tools, voice
+from app.routers import (
+    actions,
+    artifacts,
+    capabilities,
+    connections,
+    health,
+    memory,
+    page_context,
+    tools,
+    voice,
+)
 from app.services.scheduler import scheduler_loop
 from app.security.auth import JwksCache
 from app.security.rate_limit import SlidingWindowRateLimiter
@@ -21,8 +31,10 @@ from app.security.rate_limit import SlidingWindowRateLimiter
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("auren.api")
 
-# Large enough for a conversation transcript flush or an article upload.
-MAX_BODY_BYTES = 512 * 1024
+# Large enough for bounded structured artifact inputs while still rejecting
+# unexpectedly large requests before JSON parsing. Individual schemas enforce
+# much tighter field and row limits.
+MAX_BODY_BYTES = 8 * 1024 * 1024
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -149,6 +161,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(page_context.router)
     app.include_router(connections.router)
     app.include_router(actions.router)
+    app.include_router(artifacts.router)
+    app.include_router(capabilities.router)
 
     @app.exception_handler(Exception)
     async def unhandled_error(_request: Request, error: Exception) -> JSONResponse:

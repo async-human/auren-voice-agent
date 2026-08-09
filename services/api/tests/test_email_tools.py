@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+from email import policy
+from email.parser import BytesParser
 
 import httpx
 import pytest
@@ -9,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.tables import Base, PendingAction
-from app.services import action_execution, google_oauth
+from app.services import action_execution, artifacts, google_oauth
 from app.services.action_payloads import ENCRYPTED_PREFIX
 from app.tools.base import ToolContext, ToolError
 from app.tools.email_tools import (
@@ -209,6 +211,57 @@ async def test_editing_a_gmail_draft_supersedes_the_old_send_approval(
         current = await context.session.get(PendingAction, second.data["action_id"])
         assert old is not None and old.status == "superseded"
         assert current is not None and current.status == "pending"
+    finally:
+        await context.http.aclose()
+        await context.session.close()
+        await engine.dispose()
+
+
+async def test_gmail_draft_contains_owned_generated_artifact(
+    settings,
+    tmp_path,
+    valid_google_token,
+) -> None:
+    state: dict[str, str | None] = {"raw": None}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/drafts"):
+            state["raw"] = json.loads(request.content)["message"]["raw"]
+            return httpx.Response(200, json={"id": "draft-with-file"})
+        if request.method == "GET" and path.endswith("/drafts/draft-with-file"):
+            return httpx.Response(200, json={"message": {"raw": state["raw"]}})
+        return httpx.Response(404)
+
+    context, engine = await _context(settings, tmp_path, respond)
+    try:
+        artifact = await artifacts.create_artifact(
+            context.session,
+            settings,
+            user_id=context.user_id,
+            kind="document",
+            output_format="pdf",
+            title="Verified report",
+            content=b"%PDF-1.4\nAuren test\n",
+        )
+        result = await draft_email(
+            context,
+            DraftEmailArgs(
+                to="rahul@example.com",
+                subject="Verified report",
+                body="Attached is the report.",
+                artifact_ids=[artifact.id],
+            ),
+        )
+
+        assert result.data["pending"] is True
+        decoded = base64.urlsafe_b64decode(str(state["raw"]) + "=" * (-len(str(state["raw"])) % 4))
+        message = BytesParser(policy=policy.default).parsebytes(decoded)
+        attachments = list(message.iter_attachments())
+        assert len(attachments) == 1
+        assert attachments[0].get_filename() == "Verified-report.pdf"
+        assert attachments[0].get_content_type() == "application/pdf"
+        assert attachments[0].get_payload(decode=True) == b"%PDF-1.4\nAuren test\n"
     finally:
         await context.http.aclose()
         await context.session.close()

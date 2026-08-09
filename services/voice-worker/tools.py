@@ -42,6 +42,10 @@ _TOOL_DISPLAY_NAMES = {
     "trash_email": "Move email to Trash",
     "draft_email": "Create email draft",
     "send_email": "Send email",
+    "create_document": "Create document",
+    "create_spreadsheet": "Create spreadsheet",
+    "create_presentation": "Create presentation",
+    "list_artifacts": "Generated files",
     "confirm_pending_action": "Confirm approved action",
     "reject_pending_action": "Reject pending action",
     "list_pending_actions": "Pending actions",
@@ -85,6 +89,10 @@ def _decision_summary(tool: str, arguments: dict[str, Any]) -> str:
         "trash_email": "Preparing to move the exact message to Trash, pending explicit approval.",
         "draft_email": "Creating a reviewable Gmail draft before anything can be sent.",
         "send_email": "Preparing the exact recipient, subject, and content for approval before sending.",
+        "create_document": "Turning the completed content into a polished, downloadable document.",
+        "create_spreadsheet": "Structuring the requested data into a safe, downloadable spreadsheet.",
+        "create_presentation": "Turning the completed narrative into a clear presentation deck.",
+        "list_artifacts": "Checking the user's generated files before downloading or attaching one.",
         "confirm_pending_action": "Executing the exact action the user approved and verifying its result.",
         "reject_pending_action": "Cancelling the pending action so no external change is made.",
         "list_pending_actions": "Checking which consequential actions are currently waiting for a decision.",
@@ -145,7 +153,29 @@ def _input_summary(tool: str, arguments: dict[str, Any]) -> str | None:
     if tool in {"draft_email", "send_email"}:
         recipient = arguments.get("to") or "recipient not resolved"
         subject = arguments.get("subject") or "No subject"
-        return _public_text(f"To: {recipient} · Subject: {subject}")
+        artifacts = arguments.get("artifact_ids")
+        count = len(artifacts) if isinstance(artifacts, list) else 0
+        return _public_text(
+            f"To: {recipient} · Subject: {subject}"
+            + (f" · {count} attachment{'s' if count != 1 else ''}" if count else "")
+        )
+    if tool == "create_document":
+        return _public_text(
+            f"{arguments.get('title') or 'Untitled'} · {str(arguments.get('format') or 'docx').upper()}"
+        )
+    if tool == "create_spreadsheet":
+        rows = arguments.get("rows")
+        return _public_text(
+            f"{arguments.get('title') or 'Untitled'} · {len(rows) if isinstance(rows, list) else 0} rows · "
+            f"{str(arguments.get('format') or 'xlsx').upper()}"
+        )
+    if tool == "create_presentation":
+        slides = arguments.get("slides")
+        return _public_text(
+            f"{arguments.get('title') or 'Untitled'} · {len(slides) if isinstance(slides, list) else 0} content slides"
+        )
+    if tool == "list_artifacts":
+        return f"Up to {arguments.get('limit', 10)} recent files"
     if tool == "start_workflow":
         plan = arguments.get("plan")
         count = len(plan) if isinstance(plan, list) else 0
@@ -281,7 +311,8 @@ class ToolGateway:
         status = "awaiting_approval" if is_pending else "completed"
         action_id = data.get("action_id") if isinstance(data, dict) else None
         workflow_details = self._update_workflow_context(tool, arguments, data)
-        event_context = {**public_context, **workflow_details}
+        artifact_details = self._artifact_event_context(data)
+        event_context = {**public_context, **workflow_details, **artifact_details}
         if is_pending and isinstance(action_id, str):
             if len(self._pending_invocations) >= 64:
                 oldest_action_id = next(iter(self._pending_invocations))
@@ -449,6 +480,24 @@ class ToolGateway:
             details["workflowStatus"] = _public_text(status, limit=32)
             details["workflowCurrentStep"] = len(self._active_workflow_plan)
         return details
+
+    @staticmethod
+    def _artifact_event_context(data: object) -> dict[str, ToolEventValue]:
+        payload = data if isinstance(data, dict) else {}
+        artifact = payload.get("artifact")
+        if not isinstance(artifact, dict):
+            return {}
+        result: dict[str, ToolEventValue] = {}
+        for source, target in (
+            ("id", "artifactId"),
+            ("filename", "artifactFilename"),
+            ("format", "artifactFormat"),
+            ("download_url", "artifactDownloadUrl"),
+        ):
+            value = artifact.get(source)
+            if isinstance(value, str):
+                result[target] = value
+        return result
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -687,12 +736,19 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         subject: str,
         body: str,
         draft_id: str | None = None,
+        artifact_ids: list[str] | None = None,
     ) -> str:
-        """Create/update a real Gmail draft and prepare approval; never send it."""
+        """Create/update a Gmail draft with generated-file attachments; never send it."""
         return await gateway.invoke(
             "draft_email",
             user_id,
-            {"to": to, "subject": subject, "body": body, "draft_id": draft_id},
+            {
+                "to": to,
+                "subject": subject,
+                "body": body,
+                "draft_id": draft_id,
+                "artifact_ids": artifact_ids or [],
+            },
         )
 
     @function_tool
@@ -702,6 +758,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         body: str,
         draft_id: str | None = None,
         draft_content_hash: str | None = None,
+        artifact_ids: list[str] | None = None,
     ) -> str:
         """Send email via Gmail. Requires explicit user confirmation."""
         return await gateway.invoke(
@@ -713,8 +770,53 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
                 "body": body,
                 "draft_id": draft_id,
                 "draft_content_hash": draft_content_hash,
+                "artifact_ids": artifact_ids or [],
             },
         )
+
+    @function_tool
+    async def create_document(
+        title: str,
+        content: str,
+        format: Literal["docx", "pdf", "md", "html", "txt"] = "docx",
+    ) -> str:
+        """Create a polished document from completed Markdown content and save it."""
+        return await gateway.invoke(
+            "create_document",
+            user_id,
+            {"title": title, "content": content, "format": format},
+        )
+
+    @function_tool
+    async def create_spreadsheet(
+        title: str,
+        columns: list[str],
+        rows: list[list[str | int | float | bool | None]],
+        format: Literal["xlsx", "csv"] = "xlsx",
+    ) -> str:
+        """Create a structured spreadsheet and save it for download or email."""
+        return await gateway.invoke(
+            "create_spreadsheet",
+            user_id,
+            {"title": title, "columns": columns, "rows": rows, "format": format},
+        )
+
+    @function_tool
+    async def create_presentation(
+        title: str,
+        slides: list[dict[str, Any]],
+    ) -> str:
+        """Create a PPTX deck. Each slide needs title, bullets, and optional notes."""
+        return await gateway.invoke(
+            "create_presentation",
+            user_id,
+            {"title": title, "slides": slides},
+        )
+
+    @function_tool
+    async def list_artifacts(limit: int = 10) -> str:
+        """List the user's generated documents, spreadsheets, and presentations."""
+        return await gateway.invoke("list_artifacts", user_id, {"limit": limit})
 
     @function_tool
     async def list_pending_actions(limit: int = 5) -> str:
@@ -890,6 +992,10 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         trash_email,
         draft_email,
         send_email,
+        create_document,
+        create_spreadsheet,
+        create_presentation,
+        list_artifacts,
         list_pending_actions,
         start_workflow,
         update_workflow,
