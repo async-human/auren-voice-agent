@@ -32,6 +32,7 @@ from memory import (
 )
 from screen_reader import ScreenReader
 from session_state import SessionTracker
+from stt_provider import STTConfig, build_stt
 from tools import ToolGateway, build_tools
 
 if os.getenv("AUREN_ENV", "development") != "production":
@@ -49,7 +50,7 @@ LIVEKIT_AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "auren-agent")
 for livekit_variable in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
     require_env(livekit_variable)
 
-FASTER_WHISPER_BASE_URL = require_env("FASTER_WHISPER_BASE_URL").rstrip("/")
+STT_CONFIG = STTConfig.from_env()
 LLM_BASE_URL = require_env("LLM_BASE_URL").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
@@ -63,10 +64,6 @@ CHATTERBOX_MAX_SEGMENT_CHARS = max(
 )
 CHATTERBOX_RETRY_ATTEMPTS = max(
     1, int(os.getenv("CHATTERBOX_RETRY_ATTEMPTS", "1"))
-)
-# medium.en is much faster / lighter than large-v3 on a shared GPU with LLM+TTS.
-FASTER_WHISPER_MODEL = os.getenv(
-    "FASTER_WHISPER_MODEL", "Systran/faster-whisper-medium.en"
 )
 LLM_MAX_COMPLETION_TOKENS = max(
     64, int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "220"))
@@ -887,14 +884,7 @@ async def auren_session(ctx: agents.JobContext):
             },
             "preemptive_generation": {"enabled": True, "preemptive_tts": True},
         },
-        # Speaches only exposes REST /audio/transcriptions — never realtime WS.
-        stt=openai.STT(
-            model=FASTER_WHISPER_MODEL,
-            base_url=FASTER_WHISPER_BASE_URL,
-            api_key="local",
-            language="en",
-            use_realtime=False,
-        ),
+        stt=build_stt(STT_CONFIG),
         llm=openai.LLM(
             model=LLM_MODEL,
             base_url=LLM_BASE_URL,
@@ -916,9 +906,13 @@ async def auren_session(ctx: agents.JobContext):
         ),
     )
     logging.info(
-        "Voice latency profile stt=%s llm=%s think_disabled=%s "
+        "Voice latency profile stt_provider=%s stt_model=%s stt_realtime=%s "
+        "stt_language=%s llm=%s think_disabled=%s "
         "tts_timeout=%.0fs tts_segment_chars=%s endpoint_max=1.2s",
-        FASTER_WHISPER_MODEL,
+        STT_CONFIG.provider,
+        STT_CONFIG.model,
+        STT_CONFIG.use_realtime,
+        STT_CONFIG.language or "auto",
         LLM_MODEL,
         LLM_DISABLE_THINKING,
         CHATTERBOX_TIMEOUT_SECONDS,

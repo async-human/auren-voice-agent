@@ -8,13 +8,18 @@ Deployment-ready separation for an open-source realtime voice agent.
 | --- | --- | --- |
 | Vercel | Root Next.js app | Browser UI and LiveKit WebRTC client; contains no private credentials |
 | Railway | `services/api` (Python, FastAPI) | Authentication boundary, LiveKit token creation, tool gateway, database |
-| RunPod | `services/voice-worker` plus GPU model servers | LiveKit agent, faster-whisper STT, Qwen/Ollama LLM, Chatterbox TTS |
+| RunPod | `services/voice-worker` plus GPU model servers | LiveKit agent, selected STT provider, Qwen/Ollama LLM, Chatterbox TTS |
 | LiveKit Cloud | Managed realtime transport | Rooms, WebRTC media, agent dispatch |
 
-The browser never connects directly to a RunPod model port. Speaches, Ollama,
-and Chatterbox should bind to `127.0.0.1` and be consumed only by the voice
-worker on the same GPU machine. A LiveKit agent makes an outbound WebSocket
+The browser never connects directly to a model port. Local model services bind
+to `127.0.0.1`; companion services use authenticated private networking and are
+consumed only by the voice worker. A LiveKit agent makes an outbound WebSocket
 connection, so the worker requires no public inbound port.
+
+Whisper, Qwen3-ASR, and Nemotron 3.5 are supported through a validated provider
+configuration. Whisper remains the default; see
+[`docs/STT_PROVIDERS.md`](docs/STT_PROVIDERS.md) for deployment profiles,
+resource isolation, and the evaluation gate.
 
 ## Agent tools
 

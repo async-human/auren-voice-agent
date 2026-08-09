@@ -1,4 +1,4 @@
-"""Active startup probe for the local Chatterbox -> faster-whisper audio path."""
+"""Active startup probe for the selected Chatterbox -> STT audio path."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from urllib.request import Request, urlopen
 import uuid
 import wave
 
+from stt_settings import STTConfig
+
 
 RESULT_FILE = Path(
     os.getenv("AUREN_AUDIO_SMOKE_FILE", "/workspace/runtime/audio-smoke.json")
@@ -23,6 +25,7 @@ RESULT_FILE = Path(
 TIMEOUT_SECONDS = float(os.getenv("AUREN_AUDIO_SMOKE_TIMEOUT_SECONDS", "180"))
 SMOKE_TEXT = "The quick brown fox jumps over the lazy dog."
 EXPECTED_WORDS = {"quick", "brown", "fox", "lazy", "dog"}
+STT_CONFIG = STTConfig.from_env()
 
 
 def _request(request: Request, *, timeout: float = TIMEOUT_SECONDS) -> tuple[bytes, str]:
@@ -121,8 +124,9 @@ def _multipart(audio: bytes) -> tuple[bytes, str]:
             ]
         )
 
-    field("model", os.getenv("FASTER_WHISPER_MODEL", "Systran/faster-whisper-medium.en"))
-    field("language", "en")
+    field("model", STT_CONFIG.model)
+    if STT_CONFIG.language:
+        field("language", STT_CONFIG.language)
     field("response_format", "json")
     chunks.extend(
         [
@@ -138,14 +142,14 @@ def _multipart(audio: bytes) -> tuple[bytes, str]:
 
 
 def transcribe(audio: bytes) -> tuple[str, float]:
-    base_url = os.getenv(
-        "FASTER_WHISPER_BASE_URL", "http://127.0.0.1:8000/v1"
-    ).rstrip("/")
     body, boundary = _multipart(audio)
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if STT_CONFIG.api_key and STT_CONFIG.api_key != "local":
+        headers["Authorization"] = f"Bearer {STT_CONFIG.api_key}"
     request = Request(
-        f"{base_url}/audio/transcriptions",
+        f"{STT_CONFIG.base_url}/audio/transcriptions",
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers=headers,
         method="POST",
     )
     started = time.monotonic()
@@ -189,6 +193,8 @@ def main() -> None:
         result.update(
             {
                 "status": "passed",
+                "stt_provider": STT_CONFIG.provider,
+                "stt_model": STT_CONFIG.model,
                 "tts_latency_seconds": round(tts_latency, 3),
                 "stt_latency_seconds": round(stt_latency, 3),
                 "roundtrip_seconds": round(time.monotonic() - started, 3),

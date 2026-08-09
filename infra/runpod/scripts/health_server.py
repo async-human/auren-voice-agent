@@ -7,12 +7,23 @@ from pathlib import Path
 import subprocess
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+
+from stt_settings import STTConfig
 
 
-def http_ok(url: str) -> tuple[bool, str]:
+STT_CONFIG = STTConfig.from_env()
+
+
+def http_ok(url: str, *, api_key: str | None = None) -> tuple[bool, str]:
+    request: str | Request = url
+    if api_key and api_key != "local":
+        request = Request(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
     try:
-        with urlopen(url, timeout=3) as response:  # noqa: S310
+        with urlopen(request, timeout=3) as response:  # noqa: S310
             return 200 <= response.status < 300, f"http_{response.status}"
     except (HTTPError, URLError, TimeoutError) as error:
         return False, type(error).__name__
@@ -57,7 +68,7 @@ def audio_smoke() -> tuple[bool, dict[str, object]]:
 
 def readiness() -> tuple[bool, dict[str, object]]:
     checks: dict[str, tuple[bool, str]] = {
-        "speaches": http_ok("http://127.0.0.1:8000/health"),
+        "stt": http_ok(STT_CONFIG.health_url, api_key=STT_CONFIG.api_key),
         "ollama": http_ok("http://127.0.0.1:11434/api/version"),
         "chatterbox": http_ok("http://127.0.0.1:8004/v1/audio/voices"),
         "voice_worker": process_ok("voice-worker"),
@@ -68,6 +79,8 @@ def readiness() -> tuple[bool, dict[str, object]]:
     return ready, {
         "status": "ready" if ready else "starting",
         "models_ready": marker,
+        "stt_provider": STT_CONFIG.provider,
+        "stt_model": STT_CONFIG.model,
         "active_sessions": active_sessions(),
         "audio_smoke": audio_result,
         "checks": {

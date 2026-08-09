@@ -1,0 +1,15 @@
+asr:
+  backend:
+    gpu: 0
+  model:
+    path: /workspace/models/stt/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
+  streaming:
+    # One 80 ms current frame + one 80 ms right-context frame.
+    rnnt_right_context: 1
+
+http:
+  host: 0.0.0.0
+  port: 8080
+  playground: false
+  access-log: true
+  log-format: json
