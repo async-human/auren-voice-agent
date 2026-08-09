@@ -8,6 +8,7 @@ keeps the GPU pod a replaceable inference runtime.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -16,7 +17,8 @@ import httpx
 from livekit.agents import ToolError, function_tool
 
 logger = logging.getLogger("auren.tools")
-ToolEventHandler = Callable[[dict[str, str]], Awaitable[None]]
+ToolEventValue = str | int
+ToolEventHandler = Callable[[dict[str, ToolEventValue]], Awaitable[None]]
 
 
 class ToolGateway:
@@ -36,6 +38,7 @@ class ToolGateway:
             timeout=timeout,
         )
         self._on_event = on_event
+        self._pending_invocations: dict[str, tuple[str, str]] = {}
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -44,6 +47,7 @@ class ToolGateway:
     async def invoke(self, tool: str, user_id: str, arguments: dict[str, Any]) -> str:
         """Run a tool and return a sentence the model can speak."""
         invocation_id = uuid.uuid4().hex
+        started_at = time.monotonic()
         await self._notify(tool, invocation_id, "started")
         payload = {
             "tool": tool,
@@ -54,35 +58,92 @@ class ToolGateway:
         try:
             response = await self._client.post("/v1/tools/invoke", json=payload)
             response.raise_for_status()
-        except httpx.HTTPError as error:
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("Tool gateway returned a non-object response")
+        except (httpx.HTTPError, ValueError) as error:
             logger.warning("Tool gateway call failed for %s: %s", tool, error)
-            await self._notify(tool, invocation_id, "failed")
+            await self._notify(
+                tool,
+                invocation_id,
+                "failed",
+                duration_ms=_duration_ms(started_at),
+            )
             raise ToolError("I could not reach my tools just now.") from error
 
-        body = response.json()
         if not body.get("ok", False):
             detail = body.get("summary") or "That did not work."
-            await self._notify(tool, invocation_id, "failed")
+            await self._notify(
+                tool,
+                invocation_id,
+                "failed",
+                duration_ms=_duration_ms(started_at),
+            )
             raise ToolError(f"{tool} failed: {detail}")
-        await self._notify(tool, invocation_id, "completed")
-        return f"{tool} succeeded: {body['summary']}"
+        data = body.get("data")
+        is_pending = isinstance(data, dict) and data.get("pending") is True
+        status = "awaiting_approval" if is_pending else "completed"
+        action_id = data.get("action_id") if isinstance(data, dict) else None
+        if is_pending and isinstance(action_id, str):
+            if len(self._pending_invocations) >= 64:
+                oldest_action_id = next(iter(self._pending_invocations))
+                self._pending_invocations.pop(oldest_action_id, None)
+            self._pending_invocations[action_id] = (tool, invocation_id)
+        elif tool in {"confirm_pending_action", "reject_pending_action"}:
+            resolved_action_id = arguments.get("action_id")
+            if isinstance(resolved_action_id, str):
+                pending_invocation = self._pending_invocations.pop(
+                    resolved_action_id,
+                    None,
+                )
+                if pending_invocation:
+                    pending_tool, pending_invocation_id = pending_invocation
+                    await self._notify(
+                        pending_tool,
+                        pending_invocation_id,
+                        "completed" if tool == "confirm_pending_action" else "cancelled",
+                    )
+        await self._notify(
+            tool,
+            invocation_id,
+            status,
+            duration_ms=_duration_ms(started_at),
+            action_id=action_id if isinstance(action_id, str) else None,
+        )
+        summary = str(body.get("summary") or "Done.")
+        return f"{tool} succeeded: {summary}"
 
-    async def _notify(self, tool: str, invocation_id: str, status: str) -> None:
+    async def _notify(
+        self,
+        tool: str,
+        invocation_id: str,
+        status: str,
+        *,
+        duration_ms: int | None = None,
+        action_id: str | None = None,
+    ) -> None:
         if self._on_event is None:
             return
+        event: dict[str, ToolEventValue] = {
+            "tool": tool,
+            "invocationId": invocation_id,
+            "status": status,
+        }
+        if duration_ms is not None:
+            event["durationMs"] = duration_ms
+        if action_id is not None:
+            event["actionId"] = action_id
         try:
-            await self._on_event(
-                {
-                    "tool": tool,
-                    "invocationId": invocation_id,
-                    "status": status,
-                }
-            )
+            await self._on_event(event)
         except Exception as error:  # noqa: BLE001 - UI telemetry must not break tools
             logger.warning("Could not publish tool activity for %s: %s", tool, error)
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1000))
 
 
 def build_tools(gateway: ToolGateway, user_id: str) -> list:

@@ -17,9 +17,14 @@ type PendingAction = {
 type Props = {
   open: boolean;
   onClose: () => void;
+  onActionResolved?: (id: string, decision: "confirm" | "reject") => void;
 };
 
-export default function ConnectionsPanel({ open, onClose }: Props) {
+export default function ConnectionsPanel({
+  open,
+  onClose,
+  onActionResolved,
+}: Props) {
   const { getToken } = useAuth();
   const [google, setGoogle] = useState<GoogleConnection | null>(null);
   const [pending, setPending] = useState<PendingAction[]>([]);
@@ -99,10 +104,15 @@ export default function ConnectionsPanel({ open, onClose }: Props) {
     setBusy(true);
     try {
       const token = await getToken();
-      await fetch(`${apiBase}/v1/actions/${id}/${decision}`, {
+      const response = await fetch(`${apiBase}/v1/actions/${id}/${decision}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || "Action could not be resolved");
+      }
+      onActionResolved?.(id, decision);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action failed");
