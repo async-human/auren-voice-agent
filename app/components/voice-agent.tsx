@@ -12,6 +12,24 @@ const ConnectionsPanel = dynamic(() => import("./connections-panel"), { ssr: fal
 const ArtifactsPanel = dynamic(() => import("./artifacts-panel"), { ssr: false });
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
+type SttProvider = "whisper" | "qwen" | "nemotron";
+
+type SttOption = {
+  id: SttProvider;
+  label: string;
+  description: string;
+  realtime: boolean;
+};
+
+const fallbackSttOptions: SttOption[] = [
+  {
+    id: "whisper",
+    label: "Whisper",
+    description: "Mature and dependable multilingual transcription.",
+    realtime: false,
+  },
+];
+const STT_PREFERENCE_KEY = "auren.stt-provider";
 
 type Message = {
   id: number;
@@ -300,6 +318,9 @@ export default function VoiceAgent() {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isConnectionsOpen, setIsConnectionsOpen] = useState(false);
   const [isArtifactsOpen, setIsArtifactsOpen] = useState(false);
+  const [sttOptions, setSttOptions] = useState<SttOption[]>(fallbackSttOptions);
+  const [selectedSttProvider, setSelectedSttProvider] =
+    useState<SttProvider>("whisper");
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
   const [workflow, setWorkflow] = useState<WorkflowView | null>(null);
   const [activityNow, setActivityNow] = useState(() => Date.now());
@@ -386,6 +407,51 @@ export default function VoiceAgent() {
   }, [getToken]);
 
   useEffect(() => {
+    const loadSttOptions = async () => {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
+      if (!apiBaseUrl) return;
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const response = await fetch(
+          `${apiBaseUrl.replace(/\/$/, "")}/v1/voice/stt-options`,
+          { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+        );
+        if (!response.ok) return;
+        const body = (await response.json()) as {
+          default_provider: SttProvider;
+          providers: SttOption[];
+        };
+        const available = Array.isArray(body.providers)
+          ? body.providers.filter((option) =>
+              ["whisper", "qwen", "nemotron"].includes(option.id),
+            )
+          : [];
+        if (available.length === 0) return;
+        setSttOptions(available);
+        const remembered = window.localStorage.getItem(STT_PREFERENCE_KEY);
+        const preferred = available.find((option) => option.id === remembered)?.id;
+        const defaultProvider = available.find(
+          (option) => option.id === body.default_provider,
+        )?.id;
+        setSelectedSttProvider(preferred ?? defaultProvider ?? available[0].id);
+      } catch {
+        // Provider discovery is optional; Whisper remains the safe fallback.
+      }
+    };
+    void loadSttOptions();
+  }, [getToken]);
+
+  const chooseSttProvider = useCallback(
+    (provider: SttProvider) => {
+      if (phase !== "idle") return;
+      setSelectedSttProvider(provider);
+      window.localStorage.setItem(STT_PREFERENCE_KEY, provider);
+    },
+    [phase],
+  );
+
+  useEffect(() => {
     if (phase === "idle" || phase === "connecting") return;
 
     const poll = () => {
@@ -426,11 +492,16 @@ export default function VoiceAgent() {
 
       const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/voice/token`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${sessionToken}` },
+        headers: {
+          Authorization: `Bearer ${sessionToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ stt_provider: selectedSttProvider }),
       });
       const connection = (await response.json()) as {
         serverUrl?: string;
         participantToken?: string;
+        sttProvider?: SttProvider;
         detail?: string;
         error?: string;
       };
@@ -441,6 +512,9 @@ export default function VoiceAgent() {
         );
       }
       if (sessionEpochRef.current !== epoch) return null;
+      if (connection.sttProvider) {
+        setSelectedSttProvider(connection.sttProvider);
+      }
 
       // dynacast can pause publishing when subscribers flap; keep mic audio always on.
       const activeRoom = new Room({ adaptiveStream: true, dynacast: false });
@@ -886,7 +960,7 @@ export default function VoiceAgent() {
       setNotice("");
       return null;
     }
-  }, [detachRoomMedia, getToken]);
+  }, [detachRoomMedia, getToken, selectedSttProvider]);
 
   const toggleMicrophone = useCallback(async () => {
     const room = roomRef.current;
@@ -1143,6 +1217,41 @@ export default function VoiceAgent() {
                 <p>{presenceDescription}</p>
               </div>
             </div>
+
+            {sttOptions.length > 1 && (
+              <section className="sttPicker" aria-label="Speech recognition model">
+                <div className="sttPickerHead">
+                  <div>
+                    <span>Voice recognition</span>
+                    <strong>Choose how Auren hears you</strong>
+                  </div>
+                  <small>{phase === "idle" ? "For next call" : "In use"}</small>
+                </div>
+                <div className="sttChoices" role="radiogroup" aria-label="STT provider">
+                  {sttOptions.map((option) => {
+                    const selected = option.id === selectedSttProvider;
+                    return (
+                      <button
+                        className={selected ? "sttChoice sttChoiceActive" : "sttChoice"}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        disabled={phase !== "idle"}
+                        key={option.id}
+                        onClick={() => chooseSttProvider(option.id)}
+                      >
+                        <span>{option.label}</span>
+                        {option.realtime && <small>Live</small>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p>
+                  {sttOptions.find((option) => option.id === selectedSttProvider)
+                    ?.description ?? "Speech recognition for this session."}
+                </p>
+              </section>
+            )}
 
             <section className="activityRail" aria-label="Tool activity">
               <p className="srOnly" aria-live="polite" aria-atomic="true">

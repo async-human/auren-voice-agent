@@ -24,6 +24,7 @@ async def test_voice_token_shape_and_claims(
 
     body = response.json()
     assert body["serverUrl"] == "wss://example.livekit.cloud"
+    assert body["sttProvider"] == "whisper"
 
     claims = _decode_jwt(body["participantToken"])
     grants = claims["video"]
@@ -34,11 +35,49 @@ async def test_voice_token_shape_and_claims(
     assert grants["room"].startswith("auren-")
     assert claims["sub"].startswith("user-")
 
-    user_id = json.loads(claims["metadata"])["userId"]
+    metadata = json.loads(claims["metadata"])
+    user_id = metadata["userId"]
     assert not user_id.startswith("anonymous-")
+    assert metadata["sttProvider"] == "whisper"
 
     dispatch = claims["roomConfig"]["agents"][0]
     assert dispatch["agentName"] == "auren-agent"
+    assert json.loads(dispatch["metadata"])["sttProvider"] == "whisper"
+
+
+async def test_voice_stt_options_are_authenticated_and_config_driven(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    unauthorized = await client.get("/v1/voice/stt-options")
+    response = await client.get("/v1/voice/stt-options", headers=auth_headers)
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    body = response.json()
+    assert body["default_provider"] == "whisper"
+    assert [provider["id"] for provider in body["providers"]] == [
+        "whisper",
+        "qwen",
+        "nemotron",
+    ]
+    assert body["providers"][2]["realtime"] is True
+
+
+async def test_voice_token_carries_selected_stt_provider(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    response = await client.post(
+        "/v1/voice/token",
+        headers=auth_headers,
+        json={"stt_provider": "qwen"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sttProvider"] == "qwen"
+    claims = _decode_jwt(response.json()["participantToken"])
+    assert json.loads(claims["metadata"])["sttProvider"] == "qwen"
+    dispatch = claims["roomConfig"]["agents"][0]
+    assert json.loads(dispatch["metadata"])["sttProvider"] == "qwen"
 
 
 async def test_voice_token_requires_authentication(client: AsyncClient) -> None:

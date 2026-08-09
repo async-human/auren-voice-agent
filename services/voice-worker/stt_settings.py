@@ -39,8 +39,8 @@ def _boolean(name: str, default: bool) -> bool:
     )
 
 
-def _provider() -> str:
-    requested = os.getenv("STT_PROVIDER", "whisper").strip().lower()
+def normalize_stt_provider(requested: str) -> str:
+    requested = requested.strip().lower()
     provider = _PROVIDER_ALIASES.get(requested, requested)
     if provider not in SUPPORTED_STT_PROVIDERS:
         supported = ", ".join(SUPPORTED_STT_PROVIDERS)
@@ -50,8 +50,31 @@ def _provider() -> str:
     return provider
 
 
-def _provider_value(generic: str, legacy: str) -> str | None:
-    return os.getenv(generic) or os.getenv(legacy)
+def default_stt_provider() -> str:
+    return normalize_stt_provider(os.getenv("STT_PROVIDER", "whisper"))
+
+
+def available_stt_providers() -> tuple[str, ...]:
+    default = default_stt_provider()
+    configured = os.getenv("STT_AVAILABLE_PROVIDERS")
+    if configured is None:
+        return (default,)
+    providers: list[str] = []
+    for value in configured.split(","):
+        if not value.strip():
+            continue
+        provider = normalize_stt_provider(value)
+        if provider not in providers:
+            providers.append(provider)
+    if default not in providers:
+        raise RuntimeError("STT_PROVIDER must be included in STT_AVAILABLE_PROVIDERS")
+    return tuple(providers)
+
+
+def _provider_value(generic: str, specific: str, *, use_generic: bool) -> str | None:
+    if use_generic:
+        return os.getenv(generic) or os.getenv(specific)
+    return os.getenv(specific)
 
 
 def _normalize_api_base_url(raw_url: str) -> str:
@@ -89,15 +112,25 @@ class STTConfig:
     health_url: str
 
     @classmethod
-    def from_env(cls) -> "STTConfig":
-        provider = _provider()
+    def from_env(cls, provider: str | None = None) -> "STTConfig":
+        default_provider = default_stt_provider()
+        provider = normalize_stt_provider(provider) if provider else default_provider
+        if provider not in available_stt_providers():
+            raise RuntimeError(
+                f"STT provider {provider!r} is not enabled in STT_AVAILABLE_PROVIDERS"
+            )
+        use_generic = provider == default_provider
         legacy_prefix = {
             "whisper": "FASTER_WHISPER",
             "qwen": "QWEN_ASR",
             "nemotron": "NEMOTRON_ASR",
         }[provider]
 
-        base_url = _provider_value("STT_BASE_URL", f"{legacy_prefix}_BASE_URL")
+        base_url = _provider_value(
+            "STT_BASE_URL",
+            f"{legacy_prefix}_BASE_URL",
+            use_generic=use_generic,
+        )
         if not base_url and provider == "whisper":
             base_url = "http://127.0.0.1:8000/v1"
         if not base_url:
@@ -106,12 +139,20 @@ class STTConfig:
             )
         normalized_base_url = _normalize_api_base_url(base_url)
 
-        model = _provider_value("STT_MODEL", f"{legacy_prefix}_MODEL")
+        model = _provider_value(
+            "STT_MODEL",
+            f"{legacy_prefix}_MODEL",
+            use_generic=use_generic,
+        )
         model = (model or _DEFAULT_MODELS[provider]).strip()
         if not model:
             raise RuntimeError("STT_MODEL cannot be empty")
 
-        configured_language = os.getenv("STT_LANGUAGE")
+        configured_language = _provider_value(
+            "STT_LANGUAGE",
+            f"{legacy_prefix}_LANGUAGE",
+            use_generic=use_generic,
+        )
         if configured_language is not None:
             language = configured_language.strip()
         elif provider == "whisper":
@@ -127,19 +168,26 @@ class STTConfig:
         if detect_language:
             language = ""
 
-        use_realtime = _boolean("STT_USE_REALTIME", provider == "nemotron")
+        realtime_name = (
+            "STT_USE_REALTIME" if use_generic else f"{legacy_prefix}_USE_REALTIME"
+        )
+        use_realtime = _boolean(realtime_name, provider == "nemotron")
         if use_realtime and provider != "nemotron":
             raise RuntimeError(
                 "STT_USE_REALTIME is currently supported only for Nemotron via "
                 "NeMo-Speech.cpp's OpenAI-compatible /v1/realtime endpoint"
             )
 
-        api_key = (
-            os.getenv("STT_API_KEY")
-            or os.getenv(f"{legacy_prefix}_API_KEY")
-            or "local"
-        )
-        health_url = os.getenv("STT_HEALTH_URL") or _default_health_url(
+        api_key = _provider_value(
+            "STT_API_KEY",
+            f"{legacy_prefix}_API_KEY",
+            use_generic=use_generic,
+        ) or "local"
+        health_url = _provider_value(
+            "STT_HEALTH_URL",
+            f"{legacy_prefix}_HEALTH_URL",
+            use_generic=use_generic,
+        ) or _default_health_url(
             normalized_base_url
         )
 

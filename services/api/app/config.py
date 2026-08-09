@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "staging", "production"]
@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_poll_seconds: int = Field(default=30, ge=5)
 
+    # STT choices exposed to signed-in users. The API puts the validated choice
+    # into signed LiveKit metadata; the worker owns endpoint credentials.
+    stt_default_provider: Literal["whisper", "qwen", "nemotron"] = "whisper"
+    stt_available_providers: str = "whisper"
+
     # Generated user artifacts. Mount this directory on persistent storage in
     # production; files are immutable and metadata lives in the database.
     artifact_storage_dir: str = "./.data/artifacts"
@@ -91,6 +96,15 @@ class Settings(BaseSettings):
             return value.replace("postgresql://", "postgresql+asyncpg://", 1)
         return value
 
+    @model_validator(mode="after")
+    def _validate_stt_providers(self) -> "Settings":
+        providers = self.stt_provider_list
+        if self.stt_default_provider not in providers:
+            raise ValueError(
+                "STT_DEFAULT_PROVIDER must be included in STT_AVAILABLE_PROVIDERS"
+            )
+        return self
+
     @property
     def resolved_jwks_url(self) -> str | None:
         if self.clerk_jwks_url:
@@ -113,6 +127,22 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def stt_provider_list(self) -> list[str]:
+        supported = {"whisper", "qwen", "nemotron"}
+        providers: list[str] = []
+        for value in self.stt_available_providers.split(","):
+            provider = value.strip().lower()
+            if not provider:
+                continue
+            if provider not in supported:
+                raise ValueError(f"Unsupported STT provider {provider!r}")
+            if provider not in providers:
+                providers.append(provider)
+        if not providers:
+            raise ValueError("STT_AVAILABLE_PROVIDERS cannot be empty")
+        return providers
 
     @property
     def is_production(self) -> bool:

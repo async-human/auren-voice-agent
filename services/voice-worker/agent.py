@@ -31,7 +31,13 @@ from memory import (
 )
 from screen_reader import ScreenReader
 from session_state import SessionTracker
-from stt_provider import STTConfig, build_stt
+from stt_provider import (
+    STTConfig,
+    available_stt_providers,
+    build_stt,
+    default_stt_provider,
+    normalize_stt_provider,
+)
 from tools import ToolGateway, build_tools
 
 if os.getenv("AUREN_ENV", "development") != "production":
@@ -49,7 +55,14 @@ LIVEKIT_AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "auren-agent")
 for livekit_variable in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
     require_env(livekit_variable)
 
-STT_CONFIG = STTConfig.from_env()
+DEFAULT_STT_PROVIDER = default_stt_provider()
+AVAILABLE_STT_PROVIDERS = available_stt_providers()
+# Fail startup before accepting calls if an advertised provider is missing its
+# endpoint configuration. The model runtimes themselves are monitored by the
+# RunPod readiness service.
+STT_CONFIGS = {
+    provider: STTConfig.from_env(provider) for provider in AVAILABLE_STT_PROVIDERS
+}
 LLM_BASE_URL = require_env("LLM_BASE_URL").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
@@ -776,6 +789,18 @@ async def auren_session(ctx: agents.JobContext):
     metadata = json.loads(participant.metadata or "{}")
     user_id = metadata.get("userId", "local-user")
     display_name = metadata.get("displayName")
+    requested_stt_provider = metadata.get("sttProvider")
+    if requested_stt_provider is None:
+        stt_provider = DEFAULT_STT_PROVIDER
+    elif not isinstance(requested_stt_provider, str):
+        raise RuntimeError("Invalid STT provider in signed participant metadata")
+    else:
+        stt_provider = normalize_stt_provider(requested_stt_provider)
+    if stt_provider not in AVAILABLE_STT_PROVIDERS:
+        raise RuntimeError(
+            f"Requested STT provider {stt_provider!r} is not enabled on this worker"
+        )
+    session_stt_config = STT_CONFIGS[stt_provider]
     room_name = ctx.room.name if ctx.room else None
 
     gateway: ToolGateway | None = None
@@ -919,7 +944,7 @@ async def auren_session(ctx: agents.JobContext):
             },
             "preemptive_generation": {"enabled": True, "preemptive_tts": True},
         },
-        stt=build_stt(STT_CONFIG),
+        stt=build_stt(session_stt_config),
         llm=openai.LLM(
             model=LLM_MODEL,
             base_url=LLM_BASE_URL,
@@ -944,10 +969,10 @@ async def auren_session(ctx: agents.JobContext):
         "Voice latency profile stt_provider=%s stt_model=%s stt_realtime=%s "
         "stt_language=%s llm=%s think_disabled=%s "
         "tts_timeout=%.0fs tts_segment_chars=%s endpoint_max=1.2s",
-        STT_CONFIG.provider,
-        STT_CONFIG.model,
-        STT_CONFIG.use_realtime,
-        STT_CONFIG.language or "auto",
+        session_stt_config.provider,
+        session_stt_config.model,
+        session_stt_config.use_realtime,
+        session_stt_config.language or "auto",
         LLM_MODEL,
         LLM_DISABLE_THINKING,
         CHATTERBOX_TIMEOUT_SECONDS,
