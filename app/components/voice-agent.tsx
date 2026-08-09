@@ -257,14 +257,15 @@ export default function VoiceAgent() {
       if (sessionEpochRef.current !== epoch) return null;
 
       // dynacast can pause publishing when subscribers flap; keep mic audio always on.
-      room = new Room({ adaptiveStream: true, dynacast: false });
-      roomRef.current = room;
+      const activeRoom = new Room({ adaptiveStream: true, dynacast: false });
+      room = activeRoom;
+      roomRef.current = activeRoom;
 
       const attachRemoteAudio = (track: Track) => {
         if (track.kind !== Track.Kind.Audio) return;
         const audioElement = track.attach();
         audioElement.autoplay = true;
-        audioElement.playsInline = true;
+        audioElement.setAttribute("playsinline", "true");
         audioElement.muted = voiceMutedRef.current;
         // display:none can prevent playback in some browsers; keep it in-layout but invisible.
         Object.assign(audioElement.style, {
@@ -281,7 +282,7 @@ export default function VoiceAgent() {
 
         const tryPlay = async () => {
           try {
-            await room.startAudio();
+            await activeRoom.startAudio();
             if (!voiceMutedRef.current) {
               audioElement.muted = false;
               await audioElement.play();
@@ -296,11 +297,11 @@ export default function VoiceAgent() {
         void tryPlay();
       };
 
-      room.on(RoomEvent.TrackSubscribed, (track) => {
+      activeRoom.on(RoomEvent.TrackSubscribed, (track) => {
         attachRemoteAudio(track);
       });
 
-      room.on(RoomEvent.TrackUnsubscribed, (track) => {
+      activeRoom.on(RoomEvent.TrackUnsubscribed, (track) => {
         track.detach().forEach((element) => {
           audioElementsRef.current = audioElementsRef.current.filter(
             (audioElement) => audioElement !== element,
@@ -347,17 +348,17 @@ export default function VoiceAgent() {
           setNotice("Got it — thinking");
         } else {
           setNotice("Auren replied — voice may take a moment while speech synthesizes");
-          void room.startAudio().catch(() => {
+          void activeRoom.startAudio().catch(() => {
             // Autoplay unlock is best-effort; TrackSubscribed also retries play().
           });
         }
       };
 
-      const localIdentity = () => room.localParticipant.identity;
+      const localIdentity = () => activeRoom.localParticipant.identity;
 
       const isLocalMicTrack = (trackId: string | undefined) => {
         if (!trackId) return false;
-        for (const publication of room.localParticipant.trackPublications.values()) {
+        for (const publication of activeRoom.localParticipant.trackPublications.values()) {
           if (
             publication.trackSid === trackId ||
             publication.track?.sid === trackId
@@ -387,7 +388,7 @@ export default function VoiceAgent() {
         return "assistant";
       };
 
-      room.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+      activeRoom.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
         if (topic === "auren.transcript") {
           try {
             const event = JSON.parse(new TextDecoder().decode(payload)) as {
@@ -464,12 +465,12 @@ export default function VoiceAgent() {
 
       // Live transcripts for interim captions. Finals also arrive on
       // auren.transcript — commitTranscription dedupes identical copies.
-      room.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
+      activeRoom.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
         try {
           const message = await reader.readAll();
           const attrs = reader.info.attributes ?? {};
           const finalFlag = attrs["lk.transcription_final"];
-          const isFinal = !(finalFlag === false || finalFlag === "false");
+          const isFinal = finalFlag !== "false";
           const role = resolveTranscriptRole(
             participantInfo.identity,
             attrs as Record<string, string>,
@@ -492,18 +493,18 @@ export default function VoiceAgent() {
         }
       });
 
-      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      activeRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const localSpeaking = speakers.some(
-          (speaker) => speaker.identity === room.localParticipant.identity,
+          (speaker) => speaker.identity === activeRoom.localParticipant.identity,
         );
         const agentIsSpeaking = speakers.some(
-          (speaker) => speaker.identity !== room.localParticipant.identity,
+          (speaker) => speaker.identity !== activeRoom.localParticipant.identity,
         );
         if (agentIsSpeaking) {
           setPhase("speaking");
           setNotice("Auren is speaking");
           if (!voiceMutedRef.current) {
-            void room.startAudio().catch(() => undefined);
+            void activeRoom.startAudio().catch(() => undefined);
             audioElementsRef.current.forEach((element) => {
               element.muted = false;
               void element.play().catch(() => undefined);
@@ -514,8 +515,8 @@ export default function VoiceAgent() {
         }
       });
 
-      room.on(RoomEvent.ParticipantDisconnected, (participant) => {
-        if (participant.identity === room.localParticipant.identity) return;
+      activeRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
+        if (participant.identity === activeRoom.localParticipant.identity) return;
         // Agent job crashed or left — mic stays up but nothing will transcribe.
         setFailure(
           "Auren’s voice worker disconnected. End the call, confirm the RunPod agent is healthy, then try again.",
@@ -524,7 +525,7 @@ export default function VoiceAgent() {
         setPhase("paused");
       });
 
-      room.on(RoomEvent.Disconnected, () => {
+      activeRoom.on(RoomEvent.Disconnected, () => {
         if (toolActivityTimerRef.current) {
           clearTimeout(toolActivityTimerRef.current);
           toolActivityTimerRef.current = null;
@@ -536,38 +537,38 @@ export default function VoiceAgent() {
         setNotice("Disconnected");
       });
 
-      room.on(RoomEvent.LocalTrackPublished, (publication) => {
+      activeRoom.on(RoomEvent.LocalTrackPublished, (publication) => {
         if (publication.source === Track.Source.ScreenShare) {
           setIsScreenSharing(true);
         }
       });
-      room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+      activeRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
         if (publication.source === Track.Source.ScreenShare) {
           setIsScreenSharing(false);
         }
       });
 
-      await room.connect(connection.serverUrl, connection.participantToken);
-      if (sessionEpochRef.current !== epoch || roomRef.current !== room) {
+      await activeRoom.connect(connection.serverUrl, connection.participantToken);
+      if (sessionEpochRef.current !== epoch || roomRef.current !== activeRoom) {
         // User left / component unmounted while connect was in flight.
-        detachRoomMedia(room);
-        if (room.state !== ConnectionState.Disconnected) {
-          await room.disconnect().catch(() => undefined);
+        detachRoomMedia(activeRoom);
+        if (activeRoom.state !== ConnectionState.Disconnected) {
+          await activeRoom.disconnect().catch(() => undefined);
         }
         return null;
       }
-      await room.startAudio();
+      await activeRoom.startAudio();
       // Attach any agent audio that was already live when we joined.
-      for (const participant of room.remoteParticipants.values()) {
+      for (const participant of activeRoom.remoteParticipants.values()) {
         for (const publication of participant.trackPublications.values()) {
           if (publication.track) attachRemoteAudio(publication.track);
         }
       }
-      await room.localParticipant.setMicrophoneEnabled(enableMicrophone);
-      if (sessionEpochRef.current !== epoch || roomRef.current !== room) {
-        detachRoomMedia(room);
-        if (room.state !== ConnectionState.Disconnected) {
-          await room.disconnect().catch(() => undefined);
+      await activeRoom.localParticipant.setMicrophoneEnabled(enableMicrophone);
+      if (sessionEpochRef.current !== epoch || roomRef.current !== activeRoom) {
+        detachRoomMedia(activeRoom);
+        if (activeRoom.state !== ConnectionState.Disconnected) {
+          await activeRoom.disconnect().catch(() => undefined);
         }
         return null;
       }
@@ -578,7 +579,7 @@ export default function VoiceAgent() {
           ? "Just stop talking when you’re done"
           : "Microphone off — type your message or tap to speak",
       );
-      return room;
+      return activeRoom;
     } catch (error) {
       if (roomRef.current === room) {
         roomRef.current = null;
@@ -729,10 +730,10 @@ export default function VoiceAgent() {
       <main className={`app phase-${phase}`}>
         <header className="top">
           <div className="who">
-            <span className="mark" />
+            <span className="mark" aria-hidden="true"><i /></span>
             <span className="whoName">
               Auren
-              <small>Private voice intelligence</small>
+              <small>Your private intelligence</small>
             </span>
           </div>
           <div className="account">
@@ -774,11 +775,21 @@ export default function VoiceAgent() {
 
         <div className="studioGrid">
           <aside className="presencePanel" aria-label="Voice session status">
-            <p className="presenceEyebrow">Private session</p>
+            <p className="presenceEyebrow">
+              <span className="liveDot" aria-hidden="true" />
+              {phase === "idle" ? "Auren is here" : "Private session active"}
+            </p>
             <div className={`presenceOrb presenceOrb-${phase}`} aria-hidden="true">
+              <span className="presenceAura" />
               <span className="presenceOrbit presenceOrbitA" />
               <span className="presenceOrbit presenceOrbitB" />
+              <span className="presenceMembrane">
+                <i /><i />
+              </span>
               <span className="presenceCore" />
+              <span className="presenceWave">
+                <i /><i /><i /><i /><i />
+              </span>
             </div>
             <div className="presenceCopy">
               <h1>{labels[phase]}</h1>
@@ -789,18 +800,18 @@ export default function VoiceAgent() {
               </p>
             </div>
             <div className="presenceTrust">
-              <span aria-hidden="true">✓</span>
-              Actions stay scoped to your account
+              <span aria-hidden="true"><i /></span>
+              <p><strong>Private by design</strong>Your actions remain yours to approve.</p>
             </div>
           </aside>
 
           <div className="conversationWorkspace">
             <div className="workspaceHead">
               <div>
-                <span>Live conversation</span>
-                <h2>Transcript</h2>
+                <span>Conversation space</span>
+                <h2>{messages.length ? "You and Auren" : "A new thought"}</h2>
               </div>
-              <span className="turnCount">{messages.length} {messages.length === 1 ? "turn" : "turns"}</span>
+              <span className="turnCount"><i aria-hidden="true" />{messages.length} {messages.length === 1 ? "turn" : "turns"}</span>
             </div>
 
             <section className="stage" aria-live="polite">
@@ -810,9 +821,10 @@ export default function VoiceAgent() {
               >
             {!hasConversation && (
               <div className="emptyConversation">
-                <span>New conversation</span>
-                <h1>What’s on your mind?</h1>
-                <p>Speak naturally, or switch to typing whenever you prefer.</p>
+                <span className="emptySignal" aria-hidden="true"><i /><i /><i /><i /><i /></span>
+                <p className="emptyEyebrow">No commands. No learning curve.</p>
+                <h1>Just begin.</h1>
+                <p>Speak as naturally as you would to someone who already understands.</p>
                 {pageContext?.present && (
                   <p className="pageContextHint">
                     Page ready: {pageContext.title || "Shared article"}. Ask Auren to explain it.
@@ -885,8 +897,12 @@ export default function VoiceAgent() {
             onClick={() => void toggleMicrophone()}
             disabled={phase === "connecting"}
           >
-            <span className="pip" />
-            <span>{labels[phase]}</span>
+            <span className="micPresence" aria-hidden="true"><i /><i /><i /></span>
+            <span className="micLabel">
+              <small>{phase === "idle" ? "Tap to begin" : "Voice session"}</small>
+              <strong>{labels[phase]}</strong>
+            </span>
+            <span className="micAction" aria-hidden="true">{phase === "idle" ? "↗" : "•••"}</span>
           </button>
 
           {isTypeOpen && (

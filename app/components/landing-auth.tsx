@@ -31,8 +31,8 @@ export function LandingPrimaryCta() {
   if (isSignedIn) {
     return (
       <Link className="landingPrimary" href="/talk">
-        <span className="pip" />
         <span>Start a conversation</span>
+        <span className="ctaArrow" aria-hidden="true">↗</span>
       </Link>
     );
   }
@@ -43,8 +43,8 @@ export function LandingPrimaryCta() {
       href={isLoaded ? "/sign-in" : "#"}
       aria-disabled={!isLoaded}
     >
-      <span className="pip" />
       <span>Sign in to start</span>
+      <span className="ctaArrow" aria-hidden="true">↗</span>
     </Link>
   );
 }
