@@ -719,6 +719,62 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .activityLive i,
 .activityQuiet i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .activityLive i { box-shadow: 0 0 9px rgba(139, 233, 213, .7); animation: coreBreath 1.1s ease-in-out infinite; }
+.workflowCard,
+.decisionCard {
+  margin-top: 11px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .021);
+  box-shadow: inset 0 1px rgba(255,255,255,.018);
+}
+.workflowCard {
+  max-height: 190px;
+  padding: 11px 12px 12px;
+  overflow-y: auto;
+  scrollbar-color: rgba(139, 233, 213, .15) transparent;
+  scrollbar-width: thin;
+}
+.workflowCard-active,
+.workflowCard-running,
+.workflowCard-planning { border-color: rgba(139, 233, 213, .16); }
+.workflowCard-completed { border-color: rgba(139, 233, 213, .2); background: rgba(139, 233, 213, .032); }
+.workflowCard-failed { border-color: rgba(255, 146, 126, .2); }
+.workflowCardHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workflowCardHead span,
+.decisionCard > span {
+  color: var(--faint);
+  font-size: 7.5px;
+  font-weight: 680;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+}
+.workflowCardHead strong {
+  color: var(--aqua);
+  font-size: 8px;
+  font-weight: 650;
+}
+.workflowCard > p {
+  margin: 7px 0 9px;
+  color: var(--paper-soft);
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1.42;
+}
+.workflowCard ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.workflowStep { display: grid; grid-template-columns: 13px minmax(0, 1fr); align-items: start; gap: 7px; color: var(--faint); }
+.workflowStep > span { display: grid; width: 13px; height: 13px; margin-top: 1px; place-items: center; border: 1px solid var(--line); border-radius: 50%; }
+.workflowStep > span i { width: 3px; height: 3px; border-radius: 50%; background: currentColor; }
+.workflowStep small { font-size: 8.5px; line-height: 1.42; }
+.workflowStep-active { color: var(--aqua); }
+.workflowStep-active > span { border-color: rgba(139, 233, 213, .28); box-shadow: 0 0 10px rgba(139, 233, 213, .08); }
+.workflowStep-active > span i { animation: coreBreath 1s ease-in-out infinite; }
+.workflowStep-completed { color: rgba(139, 233, 213, .55); }
+.workflowStep-completed > span { border-color: rgba(139, 233, 213, .2); }
+.workflowStep-completed > span i { width: 5px; height: 7px; border: solid currentColor; border-width: 0 1px 1px 0; border-radius: 0; background: transparent; transform: rotate(45deg) translate(-1px, 1px); }
+.workflowStep-failed { color: var(--coral); }
+.decisionCard { padding: 10px 12px; border-color: rgba(139, 233, 213, .13); background: linear-gradient(105deg, rgba(139, 233, 213, .045), rgba(255,255,255,.014)); }
+.decisionCard p { margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.decisionCard small { display: block; margin-top: 6px; overflow: hidden; color: var(--faint); font-size: 7.5px; text-overflow: ellipsis; white-space: nowrap; }
 .activityEmpty {
   display: grid;
   flex: 1;
@@ -750,10 +806,10 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .toolTimelineItem {
   display: grid;
   grid-template-columns: 31px minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 10px;
-  min-height: 52px;
-  padding: 8px 9px;
+  min-height: 66px;
+  padding: 9px;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: rgba(255, 255, 255, .022);
@@ -779,6 +835,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(0, 0, 0, .16);
+  margin-top: 1px;
 }
 .toolTimelineItem-started .toolTimelineGlyph { color: var(--aqua); border-color: rgba(139, 233, 213, .2); }
 .toolTimelineItem-awaiting_approval .toolTimelineGlyph { color: #ffc27a; border-color: rgba(255, 194, 122, .22); }
@@ -794,7 +851,9 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .toolTimelineItem-started .toolTimelineCopy small i { box-shadow: 0 0 8px rgba(139, 233, 213, .62); animation: coreBreath 1s ease-in-out infinite; }
 .toolTimelineItem-awaiting_approval .toolTimelineCopy small { color: #ffc27a; }
 .toolTimelineItem-failed .toolTimelineCopy small { color: var(--coral); }
-.toolTimelineMeta { display: grid; justify-items: end; gap: 4px; color: var(--faint); font-size: 8px; font-variant-numeric: tabular-nums; }
+.toolTimelineCopy p { margin: 2px 0 0; color: var(--muted); font-size: 8.5px; line-height: 1.42; }
+.toolTimelineInput { overflow: hidden; color: var(--faint); font-size: 7.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.toolTimelineMeta { display: grid; justify-items: end; gap: 4px; padding-top: 2px; color: var(--faint); font-size: 8px; font-variant-numeric: tabular-nums; }
 .toolTimelineMeta button {
   padding: 4px 7px;
   color: #ffd6a7;

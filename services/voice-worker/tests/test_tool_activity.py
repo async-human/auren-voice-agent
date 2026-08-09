@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import httpx
 from livekit.agents import ToolError
-
 from tools import ToolEventValue, ToolGateway
 
 
@@ -55,7 +54,12 @@ class ToolActivityTests(unittest.IsolatedAsyncioTestCase):
             await gateway.aclose()
 
         self.assertEqual(json.loads(result)["summary"], "It is 2:30 PM.")
-        self.assertEqual([event["status"] for event in events], ["started", "completed"])
+        self.assertEqual(
+            [event["status"] for event in events], ["started", "completed"]
+        )
+        self.assertEqual(events[0]["displayName"], "Current time")
+        self.assertIn("timezone", str(events[0]["decisionSummary"]).lower())
+        self.assertEqual(events[-1]["resultSummary"], "It is 2:30 PM.")
         self.assertIsInstance(events[-1]["durationMs"], int)
         self.assertGreaterEqual(events[-1]["durationMs"], 0)
 
@@ -76,6 +80,96 @@ class ToolActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["status"], "awaiting_approval")
         self.assertEqual(events[-1]["actionId"], "action-1")
         self.assertNotIn("to", events[-1])
+        self.assertEqual(
+            events[-1]["inputSummary"],
+            "To: person@example.com · Subject: No subject",
+        )
+
+    async def test_email_activity_never_publishes_the_message_body(self) -> None:
+        gateway, events = await self.make_gateway(
+            {
+                "ok": True,
+                "summary": "Draft created.",
+                "data": {"pending": True, "action_id": "action-private"},
+            },
+        )
+
+        try:
+            await gateway.invoke(
+                "draft_email",
+                "user-1",
+                {
+                    "to": "person@example.com",
+                    "subject": "Quarterly plan",
+                    "body": "PRIVATE-BODY-CONTENT",
+                },
+            )
+        finally:
+            await gateway.aclose()
+
+        self.assertNotIn("PRIVATE-BODY-CONTENT", json.dumps(events))
+        self.assertIn("person@example.com", str(events[-1]["inputSummary"]))
+
+    async def test_workflow_plan_and_progress_are_linked_to_tool_events(self) -> None:
+        gateway, events = await self.make_gateway(
+            {
+                "ok": True,
+                "summary": "Workflow started.",
+                "data": {
+                    "workflow_id": "workflow-1",
+                    "goal": "Research and send a report",
+                    "plan": [
+                        "Research sources",
+                        "Create report",
+                        "Send after approval",
+                    ],
+                },
+            },
+        )
+        try:
+            await gateway.invoke(
+                "start_workflow",
+                "user-1",
+                {
+                    "goal": "Research and send a report",
+                    "plan": [
+                        "Research sources",
+                        "Create report",
+                        "Send after approval",
+                    ],
+                },
+            )
+            await gateway.client.aclose()
+            gateway._client = httpx.AsyncClient(  # noqa: SLF001
+                base_url="https://tools.example",
+                transport=httpx.MockTransport(
+                    lambda _request: httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "summary": "Found current sources.",
+                            "data": {"results": []},
+                        },
+                    )
+                ),
+            )
+            await gateway.invoke(
+                "search_web", "user-1", {"query": "current STT models"}
+            )
+        finally:
+            await gateway.aclose()
+
+        workflow_events = [
+            event for event in events if event["tool"] == "start_workflow"
+        ]
+        search_events = [event for event in events if event["tool"] == "search_web"]
+        self.assertEqual(workflow_events[-1]["workflowId"], "workflow-1")
+        self.assertEqual(
+            workflow_events[-1]["workflowPlan"],
+            ["Research sources", "Create report", "Send after approval"],
+        )
+        self.assertEqual(search_events[0]["workflowId"], "workflow-1")
+        self.assertEqual(search_events[0]["inputSummary"], "Query: current STT models")
 
     async def test_voice_confirmation_resolves_the_original_activity(self) -> None:
         gateway, events = await self.make_gateway(
@@ -112,16 +206,16 @@ class ToolActivityTests(unittest.IsolatedAsyncioTestCase):
             await gateway.aclose()
 
         resolved = [
-            event
-            for event in events
-            if event["invocationId"] == original_invocation_id
+            event for event in events if event["invocationId"] == original_invocation_id
         ]
         self.assertEqual(
             [event["status"] for event in resolved],
             ["started", "awaiting_approval", "completed"],
         )
 
-    async def test_latest_voice_confirmation_resolves_activity_from_result_action_id(self) -> None:
+    async def test_latest_voice_confirmation_resolves_activity_from_result_action_id(
+        self,
+    ) -> None:
         gateway, events = await self.make_gateway(
             {
                 "ok": True,
@@ -172,7 +266,9 @@ class ToolActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["status"], "failed")
         self.assertIsInstance(events[-1]["durationMs"], int)
 
-    async def test_failed_confirmation_marks_original_pending_activity_failed(self) -> None:
+    async def test_failed_confirmation_marks_original_pending_activity_failed(
+        self,
+    ) -> None:
         gateway, events = await self.make_gateway(
             {
                 "ok": True,

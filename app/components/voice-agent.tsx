@@ -31,7 +31,26 @@ type ToolActivity = {
   status: ToolActivityStatus;
   durationMs?: number;
   actionId?: string;
+  displayName?: string;
+  decisionSummary?: string;
+  inputSummary?: string;
+  resultSummary?: string;
+  workflowId?: string;
+  workflowGoal?: string;
+  workflowPlan?: string[];
+  workflowCurrentStep?: number;
+  workflowStatus?: string;
   receivedAt: number;
+};
+
+type WorkflowView = {
+  id?: string;
+  sourceInvocationId: string;
+  goal: string;
+  plan: string[];
+  currentStep: number;
+  status: string;
+  resultSummary?: string;
 };
 
 const toolLabels: Record<string, string> = {
@@ -117,6 +136,10 @@ function toolLabel(tool: string): string {
   return toolLabels[tool] ?? tool.replaceAll("_", " ");
 }
 
+function activityLabel(activity: ToolActivity): string {
+  return activity.displayName || toolLabel(activity.tool);
+}
+
 function toolAction(tool: string): string {
   return toolActions[tool] ?? `Using ${toolLabel(tool)}`;
 }
@@ -142,6 +165,19 @@ function formatToolTiming(activity: ToolActivity, now: number): string {
   if (duration < 1000) return activity.status === "started" ? "Now" : "<1s";
   const seconds = duration / 1000;
   return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+}
+
+function workflowStepState(
+  workflow: WorkflowView,
+  index: number,
+): "completed" | "active" | "pending" | "failed" {
+  if (workflow.status === "failed") {
+    return index < workflow.currentStep ? "completed" : index === workflow.currentStep ? "failed" : "pending";
+  }
+  if (workflow.status === "completed") return "completed";
+  if (index < workflow.currentStep) return "completed";
+  if (index === workflow.currentStep) return "active";
+  return "pending";
 }
 
 function ToolGlyph({ tool }: { tool: string }) {
@@ -245,6 +281,7 @@ export default function VoiceAgent() {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isConnectionsOpen, setIsConnectionsOpen] = useState(false);
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
+  const [workflow, setWorkflow] = useState<WorkflowView | null>(null);
   const [activityNow, setActivityNow] = useState(() => Date.now());
   const [pageContext, setPageContext] = useState<PageContextMeta | null>(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -275,6 +312,7 @@ export default function VoiceAgent() {
     if (!room) {
       setInterim(null);
       setToolActivities([]);
+      setWorkflow(null);
       setPageContext(null);
       setIsScreenSharing(false);
       setIsMicMuted(false);
@@ -295,6 +333,7 @@ export default function VoiceAgent() {
     }
     setInterim(null);
     setToolActivities([]);
+    setWorkflow(null);
     setPageContext(null);
     setIsScreenSharing(false);
     setIsMicMuted(false);
@@ -347,6 +386,7 @@ export default function VoiceAgent() {
     if (roomRef.current) return roomRef.current;
     const epoch = ++sessionEpochRef.current;
     setToolActivities([]);
+    setWorkflow(null);
     setPhase("connecting");
     setNotice("Securing a realtime session");
 
@@ -572,7 +612,12 @@ export default function VoiceAgent() {
           }
 
           const receivedAt = Date.now();
-          const activity = {
+          const workflowPlan = Array.isArray(event.workflowPlan)
+            ? event.workflowPlan.filter(
+                (step): step is string => typeof step === "string" && Boolean(step.trim()),
+              )
+            : undefined;
+          const activity: ToolActivity = {
             tool: event.tool,
             invocationId: event.invocationId,
             status: event.status as ToolActivityStatus,
@@ -580,17 +625,82 @@ export default function VoiceAgent() {
               typeof event.durationMs === "number" ? event.durationMs : undefined,
             actionId:
               typeof event.actionId === "string" ? event.actionId : undefined,
+            displayName:
+              typeof event.displayName === "string" ? event.displayName : undefined,
+            decisionSummary:
+              typeof event.decisionSummary === "string"
+                ? event.decisionSummary
+                : undefined,
+            inputSummary:
+              typeof event.inputSummary === "string" ? event.inputSummary : undefined,
+            resultSummary:
+              typeof event.resultSummary === "string" ? event.resultSummary : undefined,
+            workflowId:
+              typeof event.workflowId === "string" ? event.workflowId : undefined,
+            workflowGoal:
+              typeof event.workflowGoal === "string" ? event.workflowGoal : undefined,
+            workflowPlan,
+            workflowCurrentStep:
+              typeof event.workflowCurrentStep === "number"
+                ? event.workflowCurrentStep
+                : undefined,
+            workflowStatus:
+              typeof event.workflowStatus === "string"
+                ? event.workflowStatus
+                : undefined,
             receivedAt,
           };
           setActivityNow(receivedAt);
+          if (activity.tool === "start_workflow" && activity.workflowGoal) {
+            setWorkflow((current) => ({
+              id: activity.workflowId ?? current?.id,
+              sourceInvocationId: activity.invocationId,
+              goal: activity.workflowGoal ?? current?.goal ?? "Current request",
+              plan: activity.workflowPlan ?? current?.plan ?? [],
+              currentStep:
+                activity.workflowCurrentStep ?? current?.currentStep ?? 0,
+              status: activity.workflowStatus ?? current?.status ?? "planning",
+              resultSummary: activity.resultSummary ?? current?.resultSummary,
+            }));
+          } else if (activity.workflowId) {
+            setWorkflow((current) => {
+              if (!current || (current.id && current.id !== activity.workflowId)) {
+                return current;
+              }
+              return {
+                ...current,
+                id: activity.workflowId ?? current.id,
+                currentStep:
+                  activity.workflowCurrentStep ?? current.currentStep,
+                status: activity.workflowStatus ?? current.status,
+                resultSummary:
+                  activity.tool === "complete_workflow"
+                    ? activity.resultSummary ?? current.resultSummary
+                    : current.resultSummary,
+              };
+            });
+          }
           setToolActivities((current) => {
             const existing = current.find(
               (item) => item.invocationId === activity.invocationId,
             );
             const updated = {
+              ...existing,
               ...activity,
               durationMs: activity.durationMs ?? existing?.durationMs,
               actionId: activity.actionId ?? existing?.actionId,
+              displayName: activity.displayName ?? existing?.displayName,
+              decisionSummary:
+                activity.decisionSummary ?? existing?.decisionSummary,
+              inputSummary: activity.inputSummary ?? existing?.inputSummary,
+              resultSummary: activity.resultSummary ?? existing?.resultSummary,
+              workflowId: activity.workflowId ?? existing?.workflowId,
+              workflowGoal: activity.workflowGoal ?? existing?.workflowGoal,
+              workflowPlan: activity.workflowPlan ?? existing?.workflowPlan,
+              workflowCurrentStep:
+                activity.workflowCurrentStep ?? existing?.workflowCurrentStep,
+              workflowStatus:
+                activity.workflowStatus ?? existing?.workflowStatus,
               receivedAt: existing?.receivedAt ?? activity.receivedAt,
             };
             const next = [
@@ -608,7 +718,7 @@ export default function VoiceAgent() {
                 item.status !== "started" &&
                 item.status !== "awaiting_approval",
             );
-            return [...unsettled, ...settled].slice(0, 6);
+            return [...unsettled, ...settled].slice(0, 10);
           });
         } catch {
           // Ignore unrelated or malformed data-channel messages.
@@ -810,6 +920,10 @@ export default function VoiceAgent() {
             ? {
                 ...activity,
                 status: decision === "confirm" ? "completed" : "cancelled",
+                resultSummary:
+                  decision === "confirm"
+                    ? "The approved action completed successfully."
+                    : "You rejected this action. No external change was made.",
               }
             : activity,
         ),
@@ -892,14 +1006,15 @@ export default function VoiceAgent() {
     (activity) => activity.status === "awaiting_approval",
   );
   const presenceHeading = activeToolActivity
-    ? toolAction(activeToolActivity.tool)
+    ? activityLabel(activeToolActivity)
     : approvalActivity
       ? "Ready when you are"
       : labels[phase];
   const presenceDescription = activeToolActivity
-    ? "Auren is working securely. You can follow each step below."
+    ? activeToolActivity.decisionSummary || toolAction(activeToolActivity.tool)
     : approvalActivity
-      ? "A consequential action is prepared and will not run without your approval."
+      ? approvalActivity.resultSummary ||
+        "A consequential action is prepared and will not run without your approval."
       : phase === "idle"
         ? "Begin with your voice, or switch to typing whenever you prefer."
         : notice || "Your secure realtime session is active.";
@@ -994,13 +1109,13 @@ export default function VoiceAgent() {
             <section className="activityRail" aria-label="Tool activity">
               <p className="srOnly" aria-live="polite" aria-atomic="true">
                 {toolActivities[0]
-                  ? `${toolLabel(toolActivities[0].tool)}: ${toolStatusLabels[toolActivities[0].status]}`
+                  ? `${activityLabel(toolActivities[0])}: ${toolStatusLabels[toolActivities[0].status]}. ${toolActivities[0].decisionSummary || ""}`
                   : "No tool activity yet"}
               </p>
               <div className="activityRailHead">
                 <div>
-                  <span>Live activity</span>
-                  <strong>What Auren is doing</strong>
+                  <span>Execution trace</span>
+                  <strong>Plan, decisions and outcomes</strong>
                 </div>
                 <span className={activeToolActivity ? "activityLive" : "activityQuiet"}>
                   <i aria-hidden="true" />
@@ -1008,12 +1123,51 @@ export default function VoiceAgent() {
                 </span>
               </div>
 
+              {workflow && workflow.plan.length > 0 && (
+                <article className={`workflowCard workflowCard-${workflow.status}`}>
+                  <div className="workflowCardHead">
+                    <span>Execution plan</span>
+                    <strong>
+                      {workflow.status === "completed"
+                        ? "Completed"
+                        : workflow.status === "failed"
+                          ? "Needs attention"
+                          : `${Math.min(workflow.currentStep + 1, workflow.plan.length)} of ${workflow.plan.length}`}
+                    </strong>
+                  </div>
+                  <p>{workflow.goal}</p>
+                  <ol>
+                    {workflow.plan.map((step, index) => {
+                      const stepState = workflowStepState(workflow, index);
+                      return (
+                        <li className={`workflowStep workflowStep-${stepState}`} key={`${index}-${step}`}>
+                          <span aria-hidden="true">
+                            <i />
+                          </span>
+                          <small>{step}</small>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </article>
+              )}
+
+              {activeToolActivity?.decisionSummary && (
+                <article className="decisionCard">
+                  <span>Why this step</span>
+                  <p>{activeToolActivity.decisionSummary}</p>
+                  {activeToolActivity.inputSummary && (
+                    <small>{activeToolActivity.inputSummary}</small>
+                  )}
+                </article>
+              )}
+
               {toolActivities.length === 0 ? (
                 <div className="activityEmpty">
                   <span aria-hidden="true"><i /><i /><i /></span>
                   <p>
-                    Tool progress will appear here as Auren searches, schedules,
-                    remembers, or takes action.
+                    Auren will show its plan, safe decision summaries, tool calls,
+                    approvals, and verified outcomes here.
                   </p>
                 </div>
               ) : (
@@ -1027,13 +1181,19 @@ export default function VoiceAgent() {
                         <ToolGlyph tool={activity.tool} />
                       </span>
                       <span className="toolTimelineCopy">
-                        <strong>{toolLabel(activity.tool)}</strong>
+                        <strong>{activityLabel(activity)}</strong>
                         <small>
                           <i aria-hidden="true" />
-                          {activity.status === "started"
-                            ? toolAction(activity.tool)
-                            : toolStatusLabels[activity.status]}
+                          {toolStatusLabels[activity.status]}
                         </small>
+                        <p>
+                          {activity.status === "started"
+                            ? activity.decisionSummary || toolAction(activity.tool)
+                            : activity.resultSummary || activity.decisionSummary || toolStatusLabels[activity.status]}
+                        </p>
+                        {activity.inputSummary && (
+                          <span className="toolTimelineInput">{activity.inputSummary}</span>
+                        )}
                       </span>
                       <span className="toolTimelineMeta">
                         <span>{formatToolTiming(activity, activityNow)}</span>
@@ -1054,7 +1214,7 @@ export default function VoiceAgent() {
 
             <div className="presenceTrust">
               <span aria-hidden="true"><i /></span>
-              <p><strong>Private by design</strong>Your actions remain yours to approve.</p>
+              <p><strong>Transparent by design</strong>Useful rationale, never private chain-of-thought.</p>
             </div>
           </aside>
 

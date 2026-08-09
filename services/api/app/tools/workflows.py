@@ -17,6 +17,7 @@ class StartWorkflowArgs(BaseModel):
 class UpdateWorkflowArgs(BaseModel):
     workflow_id: str
     status: str | None = None
+    # Number of plan steps completed. Zero means the first step is active.
     current_step: int | None = Field(default=None, ge=0, le=50)
     note: str | None = Field(default=None, max_length=2000)
 
@@ -76,15 +77,25 @@ async def update_workflow(context: ToolContext, args: UpdateWorkflowArgs) -> Too
     await context.session.commit()
     return ToolResult(
         summary=f"Workflow {run.id} is now {run.status} at step {run.current_step}.",
-        data={"workflow_id": run.id, "status": run.status, "current_step": run.current_step},
+        data={
+            "workflow_id": run.id,
+            "status": run.status,
+            "current_step": run.current_step,
+        },
     )
 
 
-async def complete_workflow(context: ToolContext, args: CompleteWorkflowArgs) -> ToolResult:
+async def complete_workflow(
+    context: ToolContext, args: CompleteWorkflowArgs
+) -> ToolResult:
     run = await context.session.get(WorkflowRun, args.workflow_id)
     if run is None or run.user_id != context.user_id:
         raise ToolError("Workflow not found.")
-    run.status = args.status if args.status in {"completed", "failed", "cancelled"} else "completed"
+    run.status = (
+        args.status
+        if args.status in {"completed", "failed", "cancelled"}
+        else "completed"
+    )
     run.result_summary = args.result_summary
     await context.session.commit()
     return ToolResult(
@@ -93,7 +104,9 @@ async def complete_workflow(context: ToolContext, args: CompleteWorkflowArgs) ->
     )
 
 
-async def schedule_followup(context: ToolContext, args: ScheduleFollowupArgs) -> ToolResult:
+async def schedule_followup(
+    context: ToolContext, args: ScheduleFollowupArgs
+) -> ToolResult:
     job = ScheduledJob(
         user_id=context.user_id,
         job_type=args.job_type,
@@ -126,7 +139,10 @@ START_SPEC = ToolSpec(
 
 UPDATE_SPEC = ToolSpec(
     name="update_workflow",
-    description="Update workflow status/step after progress or a blocker.",
+    description=(
+        "Update workflow progress after a step or blocker. current_step is the number "
+        "of plan steps already completed, starting at zero."
+    ),
     args_model=UpdateWorkflowArgs,
     handler=update_workflow,
 )
