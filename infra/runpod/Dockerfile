@@ -14,6 +14,7 @@ LABEL org.opencontainers.image.title="Auren GPU Voice Runtime" \
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/auren-worker \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/tmp/uv-cache \
     UV_PYTHON_INSTALL_DIR=/opt/uv-python \
@@ -29,6 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WHISPER__COMPUTE_TYPE=float16 \
     STT_MODEL_TTL=-1 \
     STT_PRELOAD=true \
+    STT_PROVIDER=whisper \
     FASTER_WHISPER_BASE_URL=http://127.0.0.1:8000/v1 \
     FASTER_WHISPER_MODEL=Systran/faster-whisper-medium.en \
     OLLAMA_HOST=127.0.0.1:11434 \
@@ -107,6 +109,8 @@ COPY --chown=auren:auren \
     services/voice-worker/session_state.py \
     services/voice-worker/memory.py \
     services/voice-worker/screen_reader.py \
+    services/voice-worker/stt_provider.py \
+    services/voice-worker/stt_settings.py \
     ./
 
 COPY infra/runpod/supervisord.conf /etc/supervisor/conf.d/auren.conf

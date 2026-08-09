@@ -1,9 +1,10 @@
 # RunPod production deployment
 
 This directory replaces every interactive RunPod installation command with one
-immutable GPU image. The image runs four supervised services:
+immutable GPU image. The image runs four supervised service boundaries:
 
-- Speaches/faster-whisper on `127.0.0.1:8000`
+- the selected STT runtime (bundled Speaches/faster-whisper by default, or an
+  authenticated Qwen3-ASR/Nemotron companion endpoint)
 - Ollama/Qwen on `127.0.0.1:11434`
 - Chatterbox Turbo on `127.0.0.1:8004`
 - LiveKit voice worker
@@ -48,7 +49,7 @@ GitHub Actions workflow builds and publishes an immutable commit-SHA tag.
 4. Attach a network volume of at least 50 GB at `/workspace`.
 5. Leave the container start command empty so the image `ENTRYPOINT` runs.
 6. Optionally expose HTTP port `9090` for a health monitor. Do not expose ports
-   `8000`, `8004`, or `11434`.
+   `8000`, `8004`, or `11434`. Do not expose a companion STT port publicly.
 7. Add the non-secret variables from `runpod.env.example`.
 8. Store the two LiveKit credentials in RunPod Secrets and reference them from
    the template as:
@@ -75,10 +76,10 @@ supervisorctl -c /etc/supervisor/conf.d/auren.conf status
 
 The readiness endpoint becomes HTTP 200 only after:
 
-- Speaches is healthy and the Whisper model is cached
+- the selected STT endpoint is healthy and its model is warm
 - Ollama has pulled and warmed Qwen
 - Chatterbox has loaded successfully
-- Chatterbox synthesizes a valid, non-silent WAV and Speaches transcribes it
+- Chatterbox synthesizes a valid, non-silent WAV and the selected STT transcribes it
 - the LiveKit worker is running
 
 The active audio check runs once during bootstrap and stores its measured TTS
@@ -90,10 +91,14 @@ python /opt/auren/bin/audio_smoke_test.py
 curl -sS http://127.0.0.1:9090/health/ready | python -m json.tool
 ```
 
-A passing startup check proves that the local model servers can complete a
+A passing startup check proves that the configured model services can complete a
 TTS-to-STT round trip. Before promoting an image, also complete one browser
 microphone test through LiveKit to verify capture permissions, room routing,
 turn handling, and speaker playback end to end.
+
+Provider-specific deployment and rollback settings are documented in
+[`docs/STT_PROVIDERS.md`](../../docs/STT_PROVIDERS.md). Only one ASR runtime
+should be active per worker deployment.
 
 ## Idle shutdown
 

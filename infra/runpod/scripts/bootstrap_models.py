@@ -13,23 +13,31 @@ from urllib.request import Request, urlopen
 import uuid
 import wave
 
+from stt_settings import STTConfig
+
 
 READY_FILE = Path("/workspace/runtime/models-ready")
 TIMEOUT_SECONDS = int(os.getenv("AUREN_BOOT_TIMEOUT_SECONDS", "1800"))
-FASTER_WHISPER_BASE_URL = os.getenv(
-    "FASTER_WHISPER_BASE_URL", "http://127.0.0.1:8000/v1"
-).rstrip("/")
-FASTER_WHISPER_MODEL = os.getenv(
-    "FASTER_WHISPER_MODEL", "Systran/faster-whisper-medium.en"
-)
+STT_CONFIG = STTConfig.from_env()
 
 
-def wait_for_json(url: str, *, timeout: int = TIMEOUT_SECONDS) -> object:
+def wait_for_json(
+    url: str,
+    *,
+    timeout: int = TIMEOUT_SECONDS,
+    api_key: str | None = None,
+) -> object:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
+    request: str | Request = url
+    if api_key and api_key != "local":
+        request = Request(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
     while time.monotonic() < deadline:
         try:
-            with urlopen(url, timeout=5) as response:  # noqa: S310
+            with urlopen(request, timeout=5) as response:  # noqa: S310
                 if 200 <= response.status < 300:
                     return response.read().decode("utf-8")
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
@@ -38,17 +46,25 @@ def wait_for_json(url: str, *, timeout: int = TIMEOUT_SECONDS) -> object:
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
 
 
-def preload_whisper() -> None:
+def preload_stt() -> None:
     if os.getenv("STT_PRELOAD", "true").lower() != "true":
         return
 
-    print(f"Preloading STT model {FASTER_WHISPER_MODEL}", flush=True)
+    if STT_CONFIG.provider != "whisper":
+        print(
+            f"STT provider {STT_CONFIG.provider} owns its model lifecycle; skipping "
+            "Speaches snapshot preload",
+            flush=True,
+        )
+        return
+
+    print(f"Preloading STT model {STT_CONFIG.model}", flush=True)
     code = (
         "import sys; from huggingface_hub import snapshot_download; "
         "print(snapshot_download(repo_id=sys.argv[1]))"
     )
     subprocess.run(
-        ["/opt/speaches/.venv/bin/python", "-u", "-c", code, FASTER_WHISPER_MODEL],
+        ["/opt/speaches/.venv/bin/python", "-u", "-c", code, STT_CONFIG.model],
         check=True,
         env={**os.environ, "HF_HUB_ENABLE_HF_TRANSFER": "0"},
     )
@@ -59,7 +75,7 @@ def _tiny_wav(seconds: float = 1.0, sample_rate: int = 16000) -> bytes:
     frame_count = int(sample_rate * seconds)
     samples = array("h")
     for index in range(frame_count):
-        # Quiet 440Hz tone — enough energy for Whisper to accept the clip.
+        # Quiet 440Hz tone — enough energy for the ASR runtime to accept the clip.
         value = int(4000 * math.sin(2 * math.pi * 440 * (index / sample_rate)))
         samples.append(value)
     buffer = io.BytesIO()
@@ -71,23 +87,33 @@ def _tiny_wav(seconds: float = 1.0, sample_rate: int = 16000) -> bytes:
     return buffer.getvalue()
 
 
-def warmup_speaches_stt() -> None:
-    """Load Whisper into GPU before Ollama/Chatterbox fill VRAM."""
-    print(f"Warming Speaches STT with {FASTER_WHISPER_MODEL}", flush=True)
+def warmup_stt() -> None:
+    """Load the selected ASR before Ollama/Chatterbox consume GPU memory."""
+    print(
+        f"Warming {STT_CONFIG.provider} STT with {STT_CONFIG.model}",
+        flush=True,
+    )
     audio = _tiny_wav()
     boundary = f"----auren-boot-{uuid.uuid4().hex}"
+    fields = [
+        ("model", STT_CONFIG.model),
+        ("response_format", "json"),
+    ]
+    if STT_CONFIG.language:
+        fields.append(("language", STT_CONFIG.language))
+    field_chunks: list[bytes] = []
+    for name, value in fields:
+        field_chunks.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                value.encode(),
+                b"\r\n",
+            ]
+        )
     body = b"".join(
         [
-            f"--{boundary}\r\n".encode(),
-            b'Content-Disposition: form-data; name="model"\r\n\r\n',
-            FASTER_WHISPER_MODEL.encode(),
-            b"\r\n",
-            f"--{boundary}\r\n".encode(),
-            b'Content-Disposition: form-data; name="language"\r\n\r\n',
-            b"en\r\n",
-            f"--{boundary}\r\n".encode(),
-            b'Content-Disposition: form-data; name="response_format"\r\n\r\n',
-            b"json\r\n",
+            *field_chunks,
             f"--{boundary}\r\n".encode(),
             b'Content-Disposition: form-data; name="file"; filename="warmup.wav"\r\n',
             b"Content-Type: audio/wav\r\n\r\n",
@@ -96,10 +122,13 @@ def warmup_speaches_stt() -> None:
             f"--{boundary}--\r\n".encode(),
         ]
     )
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if STT_CONFIG.api_key and STT_CONFIG.api_key != "local":
+        headers["Authorization"] = f"Bearer {STT_CONFIG.api_key}"
     request = Request(
-        f"{FASTER_WHISPER_BASE_URL}/audio/transcriptions",
+        f"{STT_CONFIG.base_url}/audio/transcriptions",
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers=headers,
         method="POST",
     )
     deadline = time.monotonic() + min(TIMEOUT_SECONDS, 600)
@@ -110,7 +139,7 @@ def warmup_speaches_stt() -> None:
                 if 200 <= response.status < 300:
                     payload = json.loads(response.read().decode("utf-8"))
                     print(
-                        "Speaches STT warm OK "
+                        f"{STT_CONFIG.provider} STT warm OK "
                         f"(text={str(payload.get('text', ''))[:80]!r})",
                         flush=True,
                     )
@@ -118,21 +147,24 @@ def warmup_speaches_stt() -> None:
         except HTTPError as error:
             body_text = error.read().decode("utf-8", errors="replace")[:800]
             last_error = RuntimeError(
-                f"HTTP {error.code} from Speaches transcriptions: {body_text}"
+                f"HTTP {error.code} from {STT_CONFIG.provider} "
+                f"transcriptions: {body_text}"
             )
-            print(f"Speaches warm attempt failed: {last_error}", flush=True)
+            print(f"STT warm attempt failed: {last_error}", flush=True)
         except (URLError, TimeoutError, json.JSONDecodeError) as error:
             last_error = error
-            print(f"Speaches warm attempt failed: {error}", flush=True)
+            print(f"STT warm attempt failed: {error}", flush=True)
         # Rebuild request body each retry (urlopen consumes it).
         request = Request(
-            f"{FASTER_WHISPER_BASE_URL}/audio/transcriptions",
+            f"{STT_CONFIG.base_url}/audio/transcriptions",
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            headers=headers,
             method="POST",
         )
         time.sleep(5)
-    raise RuntimeError(f"Timed out warming Speaches STT: {last_error}")
+    raise RuntimeError(
+        f"Timed out warming {STT_CONFIG.provider} STT: {last_error}"
+    )
 
 
 def _pull_and_warm_ollama(model: str) -> None:
@@ -181,11 +213,11 @@ def verify_audio_pipeline() -> None:
 
 def main() -> None:
     READY_FILE.unlink(missing_ok=True)
-    wait_for_json("http://127.0.0.1:8000/health")
-    preload_whisper()
-    # Load Whisper while the GPU is still empty. Doing this after Ollama/Chatterbox
-    # often yields HTTP 500 from /v1/audio/transcriptions (CUDA OOM).
-    warmup_speaches_stt()
+    wait_for_json(STT_CONFIG.health_url, api_key=STT_CONFIG.api_key)
+    preload_stt()
+    # Load ASR while the GPU is still empty. Doing this after Ollama/Chatterbox
+    # can yield an out-of-memory failure on shared GPU deployments.
+    warmup_stt()
     preload_ollama()
     wait_for_json("http://127.0.0.1:8004/v1/audio/voices")
     verify_audio_pipeline()
