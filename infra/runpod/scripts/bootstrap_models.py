@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 import uuid
 import wave
 
+from http_headers import build_http_headers
 from stt_settings import STTConfig, available_stt_providers
 
 
@@ -32,18 +33,15 @@ def wait_for_json(
 ) -> object:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
-    request: str | Request = url
-    if api_key and api_key != "local":
-        request = Request(
-            url,
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
+    request = Request(url, headers=build_http_headers(api_key=api_key))
     while time.monotonic() < deadline:
         try:
             with urlopen(request, timeout=5) as response:  # noqa: S310
                 if 200 <= response.status < 300:
                     return response.read().decode("utf-8")
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
+        except HTTPError as error:
+            last_error = RuntimeError(f"HTTP {error.code}")
+        except (URLError, TimeoutError, json.JSONDecodeError) as error:
             last_error = error
         time.sleep(2)
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
@@ -125,9 +123,10 @@ def warmup_stt() -> None:
             f"--{boundary}--\r\n".encode(),
         ]
     )
-    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    if STT_CONFIG.api_key and STT_CONFIG.api_key != "local":
-        headers["Authorization"] = f"Bearer {STT_CONFIG.api_key}"
+    headers = build_http_headers(
+        api_key=STT_CONFIG.api_key,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
     request = Request(
         f"{STT_CONFIG.base_url}/audio/transcriptions",
         data=body,
@@ -186,7 +185,7 @@ def _pull_and_warm_ollama(model: str) -> None:
     request = Request(
         "http://127.0.0.1:11434/api/generate",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=build_http_headers(content_type="application/json"),
         method="POST",
     )
     with urlopen(request, timeout=300) as response:  # noqa: S310

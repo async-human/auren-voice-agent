@@ -61,11 +61,14 @@ class ActiveAudioSmokeTests(unittest.TestCase):
             audio_smoke,
             "_request",
             return_value=(response, "application/json"),
-        ):
+        ) as mocked_request:
             transcript, latency = audio_smoke.transcribe(wav_fixture())
 
         self.assertIn("quick brown fox", transcript)
         self.assertGreaterEqual(latency, 0)
+        request = mocked_request.call_args.args[0]
+        self.assertEqual(request.get_header("User-agent"), "Auren-Voice-Agent/1.0")
+        self.assertEqual(request.get_header("Accept"), "application/json")
 
     def test_transcribe_rejects_unrelated_output(self) -> None:
         response = json.dumps({"text": "Completely unrelated output."}).encode()

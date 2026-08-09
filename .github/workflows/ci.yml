@@ -76,7 +76,7 @@ jobs:
         run: >-
           uv run python -m py_compile
           agent.py tools.py memory.py screen_reader.py session_state.py
-          stt_provider.py stt_settings.py
+          stt_provider.py stt_settings.py http_headers.py
           ../../infra/runpod/scripts/audio_smoke_test.py
           ../../infra/runpod/scripts/bootstrap_models.py
           ../../infra/runpod/scripts/health_server.py

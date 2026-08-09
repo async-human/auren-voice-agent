@@ -9,6 +9,7 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from http_headers import build_http_headers
 from stt_settings import STTConfig, available_stt_providers
 
 
@@ -19,16 +20,13 @@ STT_CONFIGS = {
 
 
 def http_ok(url: str, *, api_key: str | None = None) -> tuple[bool, str]:
-    request: str | Request = url
-    if api_key and api_key != "local":
-        request = Request(
-            url,
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
+    request = Request(url, headers=build_http_headers(api_key=api_key))
     try:
         with urlopen(request, timeout=3) as response:  # noqa: S310
             return 200 <= response.status < 300, f"http_{response.status}"
-    except (HTTPError, URLError, TimeoutError) as error:
+    except HTTPError as error:
+        return False, f"http_{error.code}"
+    except (URLError, TimeoutError) as error:
         return False, type(error).__name__
 
 
