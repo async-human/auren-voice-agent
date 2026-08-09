@@ -2,7 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Room, RoomEvent, Track } from "livekit-client";
+import { ConnectionState, Room, RoomEvent, Track } from "livekit-client";
 import Link from "next/link";
 import { UserButton, useAuth } from "@clerk/nextjs";
 import MarkdownMessage from "./markdown-message";
@@ -126,6 +126,8 @@ export default function VoiceAgent() {
   const [pageContext, setPageContext] = useState<PageContextMeta | null>(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const roomRef = useRef<Room | null>(null);
+  // Bumped on every disconnect so an in-flight connect cannot reattach after teardown.
+  const sessionEpochRef = useRef(0);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<HTMLMediaElement[]>([]);
   const voiceMutedRef = useRef(false);
@@ -134,23 +136,45 @@ export default function VoiceAgent() {
   // Dedupe across lk.transcription + auren.transcript (same reply can arrive 2–3×).
   const recentTranscriptKeysRef = useRef<Map<string, number>>(new Map());
 
-  const disconnect = useCallback(async () => {
-    const room = roomRef.current;
-    if (!room) return;
-
+  const detachRoomMedia = useCallback((room: Room) => {
     room.remoteParticipants.forEach((participant) => {
       participant.trackPublications.forEach((publication) => {
         publication.track?.detach().forEach((element) => element.remove());
       });
     });
+    audioElementsRef.current.forEach((element) => element.remove());
     audioElementsRef.current = [];
+  }, []);
+
+  const disconnect = useCallback(async () => {
+    sessionEpochRef.current += 1;
+    const room = roomRef.current;
+    roomRef.current = null;
+    if (!room) {
+      setInterim(null);
+      setToolActivity(null);
+      setPageContext(null);
+      setIsScreenSharing(false);
+      setIsMicMuted(false);
+      setPhase("idle");
+      return;
+    }
+
+    detachRoomMedia(room);
     recentTranscriptKeysRef.current.clear();
     if (toolActivityTimerRef.current) {
       clearTimeout(toolActivityTimerRef.current);
       toolActivityTimerRef.current = null;
     }
-    await room.disconnect();
-    roomRef.current = null;
+    try {
+      // Calling disconnect while still Disconnected tries to send leave and
+      // LiveKit logs "cannot send signal request before connected".
+      if (room.state !== ConnectionState.Disconnected) {
+        await room.disconnect();
+      }
+    } catch {
+      // Teardown races (unmount during connect) are safe to ignore.
+    }
     setInterim(null);
     setToolActivity(null);
     setPageContext(null);
@@ -158,7 +182,7 @@ export default function VoiceAgent() {
     setIsMicMuted(false);
     setPhase("idle");
     setNotice("Session ended");
-  }, []);
+  }, [detachRoomMedia]);
 
   const refreshPageContext = useCallback(async () => {
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -196,9 +220,11 @@ export default function VoiceAgent() {
 
   const startSession = useCallback(async (enableMicrophone = true) => {
     if (roomRef.current) return roomRef.current;
+    const epoch = ++sessionEpochRef.current;
     setPhase("connecting");
     setNotice("Securing a realtime session");
 
+    let room: Room | null = null;
     try {
       const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
       if (!apiBaseUrl) {
@@ -210,6 +236,7 @@ export default function VoiceAgent() {
       if (!sessionToken) {
         throw new Error("Sign in to continue");
       }
+      if (sessionEpochRef.current !== epoch) return null;
 
       const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/voice/token`, {
         method: "POST",
@@ -227,9 +254,10 @@ export default function VoiceAgent() {
           connection.detail || connection.error || "Voice service unavailable",
         );
       }
+      if (sessionEpochRef.current !== epoch) return null;
 
       // dynacast can pause publishing when subscribers flap; keep mic audio always on.
-      const room = new Room({ adaptiveStream: true, dynacast: false });
+      room = new Room({ adaptiveStream: true, dynacast: false });
       roomRef.current = room;
 
       const attachRemoteAudio = (track: Track) => {
@@ -315,7 +343,9 @@ export default function VoiceAgent() {
         });
         setInterim(null);
         setPhase(role === "user" ? "thinking" : "listening");
-        if (role === "assistant") {
+        if (role === "user") {
+          setNotice("Got it — thinking");
+        } else {
           setNotice("Auren replied — voice may take a moment while speech synthesizes");
           void room.startAudio().catch(() => {
             // Autoplay unlock is best-effort; TrackSubscribed also retries play().
@@ -380,7 +410,10 @@ export default function VoiceAgent() {
                   : event.text.trim();
               if (text) {
                 setInterim({ role: event.role, text });
-                if (event.role === "user") setPhase("listening");
+                if (event.role === "user") {
+                  setPhase("listening");
+                  setNotice("Hearing you…");
+                }
               }
               return;
             }
@@ -447,7 +480,10 @@ export default function VoiceAgent() {
 
           if (!isFinal) {
             setInterim({ role, text });
-            if (role === "user") setPhase("listening");
+            if (role === "user") {
+              setPhase("listening");
+              setNotice("Hearing you…");
+            }
             return;
           }
           commitTranscription(role, text);
@@ -512,6 +548,14 @@ export default function VoiceAgent() {
       });
 
       await room.connect(connection.serverUrl, connection.participantToken);
+      if (sessionEpochRef.current !== epoch || roomRef.current !== room) {
+        // User left / component unmounted while connect was in flight.
+        detachRoomMedia(room);
+        if (room.state !== ConnectionState.Disconnected) {
+          await room.disconnect().catch(() => undefined);
+        }
+        return null;
+      }
       await room.startAudio();
       // Attach any agent audio that was already live when we joined.
       for (const participant of room.remoteParticipants.values()) {
@@ -520,6 +564,13 @@ export default function VoiceAgent() {
         }
       }
       await room.localParticipant.setMicrophoneEnabled(enableMicrophone);
+      if (sessionEpochRef.current !== epoch || roomRef.current !== room) {
+        detachRoomMedia(room);
+        if (room.state !== ConnectionState.Disconnected) {
+          await room.disconnect().catch(() => undefined);
+        }
+        return null;
+      }
       setIsMicMuted(!enableMicrophone);
       setPhase(enableMicrophone ? "listening" : "paused");
       setNotice(
@@ -529,14 +580,26 @@ export default function VoiceAgent() {
       );
       return room;
     } catch (error) {
-      console.error("Auren session failed to start", error);
-      roomRef.current = null;
+      if (roomRef.current === room) {
+        roomRef.current = null;
+      }
+      // Disconnect during connect surfaces as AbortError — not a real failure.
+      if (sessionEpochRef.current !== epoch) {
+        setPhase("idle");
+        return null;
+      }
+      const aborted =
+        (error instanceof DOMException && error.name === "AbortError") ||
+        (error instanceof Error && /abort/i.test(error.message));
+      if (!aborted) {
+        console.error("Auren session failed to start", error);
+        setFailure(describeFailure(error));
+      }
       setPhase("idle");
       setNotice("");
-      setFailure(describeFailure(error));
       return null;
     }
-  }, [getToken]);
+  }, [detachRoomMedia, getToken]);
 
   const toggleMicrophone = useCallback(async () => {
     const room = roomRef.current;

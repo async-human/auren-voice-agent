@@ -20,7 +20,7 @@ FASTER_WHISPER_BASE_URL = os.getenv(
     "FASTER_WHISPER_BASE_URL", "http://127.0.0.1:8000/v1"
 ).rstrip("/")
 FASTER_WHISPER_MODEL = os.getenv(
-    "FASTER_WHISPER_MODEL", "Systran/faster-whisper-large-v3"
+    "FASTER_WHISPER_MODEL", "Systran/faster-whisper-medium.en"
 )
 
 

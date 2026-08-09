@@ -121,7 +121,7 @@ def _multipart(audio: bytes) -> tuple[bytes, str]:
             ]
         )
 
-    field("model", os.getenv("FASTER_WHISPER_MODEL", "Systran/faster-whisper-large-v3"))
+    field("model", os.getenv("FASTER_WHISPER_MODEL", "Systran/faster-whisper-medium.en"))
     field("language", "en")
     field("response_format", "json")
     chunks.extend(

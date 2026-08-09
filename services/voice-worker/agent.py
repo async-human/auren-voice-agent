@@ -56,14 +56,28 @@ CHATTERBOX_BASE_URL = require_env("CHATTERBOX_BASE_URL").rstrip("/")
 CHATTERBOX_MODEL = os.getenv("CHATTERBOX_MODEL", "chatterbox-turbo")
 CHATTERBOX_VOICE = os.getenv("CHATTERBOX_VOICE", "Olivia.wav")
 CHATTERBOX_TIMEOUT_SECONDS = max(
-    10.0, float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "90"))
+    10.0, float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "30"))
 )
 CHATTERBOX_MAX_SEGMENT_CHARS = max(
-    60, int(os.getenv("CHATTERBOX_MAX_SEGMENT_CHARS", "180"))
+    60, int(os.getenv("CHATTERBOX_MAX_SEGMENT_CHARS", "120"))
 )
 CHATTERBOX_RETRY_ATTEMPTS = max(
-    1, int(os.getenv("CHATTERBOX_RETRY_ATTEMPTS", "2"))
+    1, int(os.getenv("CHATTERBOX_RETRY_ATTEMPTS", "1"))
 )
+# medium.en is much faster / lighter than large-v3 on a shared GPU with LLM+TTS.
+FASTER_WHISPER_MODEL = os.getenv(
+    "FASTER_WHISPER_MODEL", "Systran/faster-whisper-medium.en"
+)
+LLM_MAX_COMPLETION_TOKENS = max(
+    64, int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "220"))
+)
+# Qwen3 defaults to "thinking" which can burn minutes of tokens before speech.
+LLM_DISABLE_THINKING = os.getenv("LLM_DISABLE_THINKING", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
 TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
@@ -79,7 +93,8 @@ INSTRUCTIONS = (
     "user's name sparingly; never prefix routine responses with it or repeat it "
     "as a conversational habit. "
     "Speak English only. "
-    "Never expose hidden reasoning."
+    "Never expose hidden reasoning. "
+    "/no_think"
 )
 
 TOOL_INSTRUCTIONS = (
@@ -271,9 +286,36 @@ _HOME_LOCATION_RE = re.compile(
 )
 
 
+_BAD_LOCATION_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "my",
+        "your",
+        "our",
+        "this",
+        "that",
+        "here",
+        "there",
+        "home",
+        "city",
+        "location",
+        "known",
+        "above",
+        "below",
+    }
+)
+
+
 def _clean_location_candidate(raw: str) -> str | None:
     candidate = re.split(r"[?!,;]|\b(?:today|now|currently)\b", raw, 1)[0].strip(" .")
-    return candidate or None
+    if not candidate:
+        return None
+    words = [part for part in re.split(r"\s+", candidate.lower()) if part]
+    if not words or any(word in _BAD_LOCATION_TOKENS for word in words):
+        return None
+    return candidate
 
 
 _SOFT_LOCATION_RE = re.compile(
@@ -819,25 +861,35 @@ async def auren_session(ctx: agents.JobContext):
     screen_reader = ScreenReader()
     screen_reader.attach(ctx.room)
 
+    llm_extra_body: dict[str, object] = {}
+    if LLM_DISABLE_THINKING:
+        # Ollama versions disagree on the key; send both common forms.
+        llm_extra_body = {
+            "think": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
     session = AgentSession(
-        vad=silero.VAD.load(),
+        # Slightly snappier end-of-utterance than plugin defaults (0.55s silence).
+        vad=silero.VAD.load(
+            min_silence_duration=0.35,
+            activation_threshold=0.55,
+            prefix_padding_duration=0.3,
+        ),
         turn_handling={
             # Keep endpointing local and deterministic on RunPod. The audio model
             # understands completed thoughts better than VAD-only silence timers.
             "turn_detection": inference.TurnDetector(version="v1-mini"),
-            "endpointing": {"mode": "dynamic", "min_delay": 0.3, "max_delay": 2.5},
+            "endpointing": {"mode": "dynamic", "min_delay": 0.25, "max_delay": 1.2},
             "interruption": {
                 "resume_false_interruption": True,
-                "false_interruption_timeout": 2.0,
+                "false_interruption_timeout": 1.0,
             },
-            "preemptive_generation": {"enabled": True, "preemptive_tts": False},
+            "preemptive_generation": {"enabled": True, "preemptive_tts": True},
         },
         # Speaches only exposes REST /audio/transcriptions — never realtime WS.
         stt=openai.STT(
-            model=os.getenv(
-                "FASTER_WHISPER_MODEL",
-                "Systran/faster-whisper-large-v3",
-            ),
+            model=FASTER_WHISPER_MODEL,
             base_url=FASTER_WHISPER_BASE_URL,
             api_key="local",
             language="en",
@@ -847,6 +899,11 @@ async def auren_session(ctx: agents.JobContext):
             model=LLM_MODEL,
             base_url=LLM_BASE_URL,
             api_key="ollama",
+            # Voice replies should stay short; long generations feel like hangups.
+            max_completion_tokens=LLM_MAX_COMPLETION_TOKENS,
+            temperature=0.6,
+            timeout=httpx.Timeout(45.0, connect=5.0),
+            **({"extra_body": llm_extra_body} if llm_extra_body else {}),
         ),
         # The custom tts_node above owns synthesis. Keeping this configured
         # preserves LiveKit's audio-output capability detection.
@@ -857,6 +914,15 @@ async def auren_session(ctx: agents.JobContext):
             api_key="local",
             response_format="wav",
         ),
+    )
+    logging.info(
+        "Voice latency profile stt=%s llm=%s think_disabled=%s "
+        "tts_timeout=%.0fs tts_segment_chars=%s endpoint_max=1.2s",
+        FASTER_WHISPER_MODEL,
+        LLM_MODEL,
+        LLM_DISABLE_THINKING,
+        CHATTERBOX_TIMEOUT_SECONDS,
+        CHATTERBOX_MAX_SEGMENT_CHARS,
     )
 
     agent = Auren(
