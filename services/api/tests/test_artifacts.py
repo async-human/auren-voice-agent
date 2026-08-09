@@ -25,13 +25,30 @@ def _internal_user_id(participant_token: str) -> str:
 
 
 def test_document_generators_create_valid_formats() -> None:
-    content = "## Findings\n\nA concise paragraph.\n\n- First point\n- Second point"
+    content = (
+        "## Findings\n\n"
+        "A **concise** paragraph with *emphasis*, `code`, and "
+        "[a source](https://example.com).\n\n"
+        "- First **point**\n"
+        "- Second point\n\n"
+        "| Measure | Result |\n| --- | --- |\n| Quality | Strong |"
+    )
     assert render_document("Research", content, "pdf").startswith(b"%PDF")
-    assert b"<h1>Research</h1>" in render_document("Research", content, "html")
+    html_document = render_document("Research", content, "html")
+    assert b"<h1>Research</h1>" in html_document
+    assert b"<strong>concise</strong>" in html_document
+    assert b"<table>" in html_document
     assert render_document("Research", content, "md").startswith(b"# Research")
     docx = Document(io.BytesIO(render_document("Research", content, "docx")))
     assert docx.core_properties.title == "Research"
     assert any(paragraph.text == "First point" for paragraph in docx.paragraphs)
+    paragraph = next(paragraph for paragraph in docx.paragraphs if "concise paragraph" in paragraph.text)
+    assert "**" not in paragraph.text
+    assert "*emphasis*" not in paragraph.text
+    assert any(run.text == "concise" and run.bold for run in paragraph.runs)
+    assert any(run.text == "emphasis" and run.italic for run in paragraph.runs)
+    assert len(docx.tables) == 1
+    assert docx.tables[0].cell(1, 0).text == "Quality"
 
 
 def test_spreadsheet_generator_is_valid_and_neutralizes_formula_injection() -> None:
