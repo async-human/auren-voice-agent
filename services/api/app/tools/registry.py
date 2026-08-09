@@ -5,7 +5,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.services import approvals
-from app.services.action_payloads import protect_arguments, redact_arguments, redact_details
+from app.services.action_payloads import (
+    protect_arguments,
+    redact_arguments,
+    redact_details,
+)
 from app.tools import (
     actions,
     calendar,
@@ -37,8 +41,11 @@ SPECS: tuple[ToolSpec, ...] = (
     calendar.LIST_SPEC,
     calendar.FREE_SPEC,
     calendar.CREATE_SPEC,
+    calendar.UPDATE_SPEC,
+    calendar.DELETE_SPEC,
     email_tools.SEARCH_SPEC,
     email_tools.READ_SPEC,
+    email_tools.TRASH_SPEC,
     email_tools.DRAFT_SPEC,
     email_tools.SEND_SPEC,
     actions.LIST_PENDING_SPEC,
@@ -95,16 +102,25 @@ async def invoke(
             )
             raise ToolError(f"Invalid arguments for {name}. {problems}") from error
 
-        raw_arguments = args.model_dump()
-        preview = build_preview(name, raw_arguments)
+        if spec.prepare is not None:
+            proposal = await spec.prepare(context, args)
+            raw_arguments = proposal.arguments
+            preview = proposal.preview
+            audit_preview = proposal.audit_preview or preview
+            effective_idempotency_key = idempotency_key or proposal.idempotency_key
+        else:
+            raw_arguments = args.model_dump()
+            preview = build_preview(name, raw_arguments)
+            audit_preview = build_audit_preview(name, raw_arguments)
+            effective_idempotency_key = idempotency_key
         stored_arguments = protect_arguments(context.settings, name, raw_arguments)
         action = await approvals.propose_action(
             context.session,
             user_id=context.user_id,
             tool=name,
             arguments=stored_arguments,
-            preview=build_audit_preview(name, raw_arguments),
-            idempotency_key=idempotency_key,
+            preview=audit_preview,
+            idempotency_key=effective_idempotency_key,
         )
         return ToolResult(
             summary=(

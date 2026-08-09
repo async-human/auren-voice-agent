@@ -74,6 +74,21 @@ class ToolGateway:
 
         if not body.get("ok", False):
             detail = body.get("summary") or "That did not work."
+            if tool in {"confirm_pending_action", "reject_pending_action"}:
+                resolved_action_id = arguments.get("action_id")
+                if not isinstance(resolved_action_id, str) and self._pending_invocations:
+                    resolved_action_id = next(reversed(self._pending_invocations))
+                if isinstance(resolved_action_id, str):
+                    pending_invocation = self._pending_invocations.pop(
+                        resolved_action_id, None
+                    )
+                    if pending_invocation:
+                        pending_tool, pending_invocation_id = pending_invocation
+                        await self._notify(
+                            pending_tool,
+                            pending_invocation_id,
+                            "failed",
+                        )
             await self._notify(
                 tool,
                 invocation_id,
@@ -289,6 +304,56 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         )
 
     @function_tool
+    async def update_calendar_event(
+        event_id: str,
+        title: str | None = None,
+        start_at: str | None = None,
+        duration_minutes: int | None = None,
+        attendees: list[str] | None = None,
+        description: str | None = None,
+        timezone: str | None = None,
+    ) -> str:
+        """Update one exact Google Calendar event. Requires confirmation.
+
+        Resolve event_id with list_calendar_events first. Only pass fields the
+        user explicitly asked to change.
+        """
+        return await gateway.invoke(
+            "update_calendar_event",
+            user_id,
+            {
+                "event_id": event_id,
+                "title": title,
+                "start_at": start_at,
+                "duration_minutes": duration_minutes,
+                "attendees": attendees,
+                "description": description,
+                "timezone": timezone,
+            },
+        )
+
+    @function_tool
+    async def delete_calendar_event(
+        event_id: str,
+        delete_series: bool = False,
+        notify_attendees: bool = True,
+    ) -> str:
+        """Delete one exact Calendar event after confirmation.
+
+        Resolve event_id first. Clarify occurrence versus series before setting
+        delete_series=true.
+        """
+        return await gateway.invoke(
+            "delete_calendar_event",
+            user_id,
+            {
+                "event_id": event_id,
+                "delete_series": delete_series,
+                "notify_attendees": notify_attendees,
+            },
+        )
+
+    @function_tool
     async def search_emails(
         query: str = "in:inbox",
         max_results: int = 5,
@@ -315,6 +380,15 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         return await gateway.invoke(
             "read_email", user_id, {"message_id": message_id}
         )
+
+    @function_tool
+    async def trash_email(message_id: str) -> str:
+        """Move one exact Gmail message to Trash after confirmation.
+
+        Resolve message_id with search_emails first. This is reversible and is
+        not immediate permanent deletion.
+        """
+        return await gateway.invoke("trash_email", user_id, {"message_id": message_id})
 
     @function_tool
     async def draft_email(
@@ -512,8 +586,11 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         list_calendar_events,
         find_free_slots,
         create_calendar_event,
+        update_calendar_event,
+        delete_calendar_event,
         search_emails,
         read_email,
+        trash_email,
         draft_email,
         send_email,
         list_pending_actions,

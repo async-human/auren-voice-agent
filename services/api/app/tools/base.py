@@ -40,6 +40,24 @@ Handler = Callable[[ToolContext, Any], Awaitable[ToolResult]]
 
 
 @dataclass(frozen=True)
+class ActionProposal:
+    """Authoritative, read-only preparation for a consequential action.
+
+    Preparers resolve resource identifiers, validate current state, and bind a
+    human-readable preview before an approval exists. The handler still
+    revalidates the bound snapshot immediately before the write.
+    """
+
+    arguments: dict[str, Any]
+    preview: str
+    audit_preview: str | None = None
+    idempotency_key: str | None = None
+
+
+Preparer = Callable[[ToolContext, Any], Awaitable[ActionProposal]]
+
+
+@dataclass(frozen=True)
 class ToolSpec(Generic[ArgsT]):
     name: str
     description: str
@@ -48,6 +66,12 @@ class ToolSpec(Generic[ArgsT]):
     # Reserved for higher-risk integrations (calendar, email, smart home) that
     # must be confirmed by the user before the gateway executes them.
     confirmation_required: bool = False
+    prepare: Preparer | None = None
 
     def parameters_schema(self) -> dict[str, Any]:
-        return self.args_model.model_json_schema()
+        schema = self.args_model.model_json_schema()
+        # Some consequential tools accept an internal approval snapshot during
+        # post-confirmation execution. Never advertise arbitrary extra input to
+        # the model even though the validated snapshot is accepted internally.
+        schema["additionalProperties"] = False
+        return schema

@@ -26,6 +26,17 @@ Run `uv run alembic upgrade head` before deploying the API. After this release,
 disconnect and reconnect any existing Google connection so Google grants the new
 least-privilege scopes and Auren captures the primary calendar timezone.
 
+Auren requests `gmail.modify`, the narrowest Gmail scope that supports reading,
+drafting, sending, and moving messages to Trash. It does not request
+`https://mail.google.com/`, so Auren cannot bypass Trash and immediately erase mail
+permanently. After this release every existing Google connection must be reconnected
+once to grant `gmail.modify`.
+
+The voice session context includes the authenticated sign-in email when the identity
+token provides it and the connected Google account email from OAuth. Auren may use a
+known address for explicit “email me” or “invite me” requests, but must confirm which
+address to use when the two differ and must never invent a recipient.
+
 ## Guardrail policy
 
 | Operation | Confirmation |
@@ -34,12 +45,17 @@ least-privilege scopes and Auren captures the primary calendar timezone.
 | List events or find availability | No; read-only |
 | Create/update a Gmail draft | No; reversible and explicitly requested |
 | Send email | Always; exact draft version is bound to the approval |
-| Create Calendar event / invite attendees | Always |
+| Move email to Gmail Trash | Always; exact message version is bound to approval |
+| Create Calendar event / invite attendees | Always; date is validated first |
+| Update Calendar event | Always; event ID and ETag are bound to approval |
+| Delete Calendar event | Always; event ID and ETag are bound to approval |
 
 Pending approvals expire after 15 minutes. Revised Gmail drafts supersede older
 approvals. Email bodies are encrypted in pending actions and omitted from audit
 details. Sends and Calendar inserts are not blindly retried; stable message/event
 identifiers are used to verify ambiguous upstream results without duplicating work.
+Invalid or past Calendar creates are rejected before an approval is created. Failed or
+stale actions leave the pending list immediately after the UI refreshes.
 
 ## End-to-end acceptance test
 
@@ -59,5 +75,15 @@ Use a dedicated Google test account and the real conversation UI:
 7. Ask Auren to create a future Calendar event with a test attendee. Confirm no
    event exists before approval, then approve and verify exactly one event and one
    invitation.
-8. Disconnect Google. Confirm the connection disappears and subsequent Google tool
+8. Ask Auren to move that event by 30 minutes. Verify the exact event is shown for
+   approval, then approve and confirm there is only one updated event.
+9. Ask Auren to delete the event. For a recurring event, verify it asks whether to
+   delete one occurrence or the series. Approve and verify removal and attendee
+   notification.
+10. Search for a dedicated test email, ask Auren to delete it, approve the exact
+    sender/subject/date preview, and verify the message appears in Gmail Trash rather
+    than being permanently erased.
+11. Say **“email me a test summary.”** Verify Auren confirms the known account address
+    (or asks which address when sign-in and Google emails differ) before drafting.
+12. Disconnect Google. Confirm the connection disappears and subsequent Google tool
    requests ask the user to reconnect.

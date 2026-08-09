@@ -9,12 +9,13 @@ import uuid
 from email.message import EmailMessage
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services import approvals, google_oauth
 from app.services.action_payloads import protect_arguments
 from app.services.google_http import request as google_request
-from app.tools.base import ToolContext, ToolError, ToolResult, ToolSpec
+from app.tools.base import ActionProposal, ToolContext, ToolError, ToolResult, ToolSpec
 
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 _ADDRESS_RE = re.compile(r"^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$")
@@ -50,6 +51,16 @@ class SearchEmailsArgs(BaseModel):
 
 class ReadEmailArgs(BaseModel):
     message_id: str = Field(min_length=1, max_length=128)
+
+
+class TrashEmailArgs(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    message_id: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Exact Gmail message id returned by search_emails.",
+    )
 
 
 class DraftEmailArgs(BaseModel):
@@ -158,6 +169,8 @@ def _message_data(payload: dict[str, Any], *, include_body: bool) -> dict[str, A
     result: dict[str, Any] = {
         "id": payload.get("id"),
         "threadId": payload.get("threadId"),
+        "historyId": payload.get("historyId"),
+        "labelIds": payload.get("labelIds") or [],
         "from": headers.get("from"),
         "to": headers.get("to"),
         "subject": headers.get("subject") or "No subject",
@@ -168,6 +181,13 @@ def _message_data(payload: dict[str, Any], *, include_body: bool) -> dict[str, A
     if include_body:
         result["body"] = _plain_body(message_payload)
     return result
+
+
+def _approval_snapshot(args: BaseModel) -> dict[str, Any]:
+    value = (args.model_extra or {}).get("_approval_snapshot")
+    if not isinstance(value, dict):
+        raise ToolError("This action is missing its verified approval snapshot. Prepare it again.")
+    return value
 
 
 def _raise_gmail_error(status_code: int, body: str, operation: str) -> None:
@@ -250,6 +270,119 @@ async def read_email(context: ToolContext, args: ReadEmailArgs) -> ToolResult:
     )
 
 
+async def prepare_trash_email(context: ToolContext, args: TrashEmailArgs) -> ActionProposal:
+    token = await google_oauth.valid_access_token(
+        context.session, context.settings, context.http, context.user_id
+    )
+    response = await google_request(
+        context.http,
+        "GET",
+        f"{GMAIL_BASE}/messages/{args.message_id}",
+        params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    _raise_gmail_error(response.status_code, response.text, "read the email before deletion")
+    message = _message_data(response.json(), include_body=False)
+    if "TRASH" in (message.get("labelIds") or []):
+        raise ToolError("That email is already in Trash.")
+    snapshot = {
+        "message_id": args.message_id,
+        "history_id": message.get("historyId"),
+        "from": message.get("from"),
+        "subject": message.get("subject") or "No subject",
+        "date": message.get("date"),
+    }
+    arguments = args.model_dump()
+    arguments["_approval_snapshot"] = snapshot
+    preview = (
+        f"Move email '{snapshot['subject']}' from {snapshot['from'] or 'unknown sender'} "
+        f"dated {snapshot['date'] or 'unknown date'} to Gmail Trash."
+    )
+    return ActionProposal(
+        arguments=arguments,
+        preview=preview,
+        idempotency_key=(
+            "gmail-trash:"
+            + hashlib.sha256(
+                f"{args.message_id}:{message.get('historyId') or 'unknown'}".encode()
+            ).hexdigest()
+        ),
+    )
+
+
+async def trash_email(context: ToolContext, args: TrashEmailArgs) -> ToolResult:
+    snapshot = _approval_snapshot(args)
+    message_id = str(snapshot.get("message_id") or args.message_id)
+    token = await google_oauth.valid_access_token(
+        context.session, context.settings, context.http, context.user_id
+    )
+    current = await google_request(
+        context.http,
+        "GET",
+        f"{GMAIL_BASE}/messages/{message_id}",
+        params={"format": "minimal"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if current.status_code == 404:
+        return ToolResult(
+            summary=f"Verified email '{snapshot.get('subject') or 'No subject'}' is no longer present.",
+            data={"id": message_id, "verified": True, "already_removed": True},
+        )
+    _raise_gmail_error(current.status_code, current.text, "read the email before deletion")
+    current_payload = current.json()
+    if "TRASH" in (current_payload.get("labelIds") or []):
+        return ToolResult(
+            summary=f"Verified email '{snapshot.get('subject') or 'No subject'}' is already in Trash.",
+            data={"id": message_id, "verified": True, "already_trashed": True},
+        )
+    expected_history = snapshot.get("history_id")
+    if expected_history and str(current_payload.get("historyId")) != str(expected_history):
+        raise ToolError(
+            "The email changed after you reviewed it. Search for it and approve deletion again."
+        )
+
+    response: httpx.Response | None = None
+    try:
+        response = await google_request(
+            context.http,
+            "POST",
+            f"{GMAIL_BASE}/messages/{message_id}/trash",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except httpx.TransportError:
+        # The POST may have reached Gmail. Resolve by reading state and never
+        # issue a second mutation automatically.
+        pass
+    if (
+        response is not None
+        and response.status_code not in {200, 204}
+        and response.status_code < 500
+    ):
+        _raise_gmail_error(response.status_code, response.text, "move the email to Trash")
+
+    # POST is not blindly retried. A read resolves both normal success and an
+    # ambiguous upstream response without risking a second mutation.
+    verify = await google_request(
+        context.http,
+        "GET",
+        f"{GMAIL_BASE}/messages/{message_id}",
+        params={"format": "minimal"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    _raise_gmail_error(verify.status_code, verify.text, "verify the trashed email")
+    if "TRASH" not in (verify.json().get("labelIds") or []):
+        if response is None or response.status_code >= 500:
+            raise ToolError(
+                "Gmail returned an ambiguous deletion result. I did not retry; check Trash before trying again."
+            )
+        raise ToolError("Gmail reported success, but the email was not found in Trash.")
+    subject = str(snapshot.get("subject") or "No subject")
+    return ToolResult(
+        summary=f"Verified email '{subject}' was moved to Gmail Trash.",
+        data={"id": message_id, "verified": True, "trashed": True},
+    )
+
+
 async def draft_email(context: ToolContext, args: DraftEmailArgs) -> ToolResult:
     token = await google_oauth.valid_access_token(
         context.session, context.settings, context.http, context.user_id
@@ -311,7 +444,7 @@ async def draft_email(context: ToolContext, args: DraftEmailArgs) -> ToolResult:
         ),
         idempotency_key=(
             "gmail-draft:"
-            + hashlib.sha256(f"{draft_id}:{content_hash}".encode("utf-8")).hexdigest()
+            + hashlib.sha256(f"{draft_id}:{content_hash}".encode()).hexdigest()
         ),
     )
     preview = f"To: {args.to}\nSubject: {args.subject}\n\n{args.body}"
@@ -401,7 +534,7 @@ async def send_email(context: ToolContext, args: SendEmailArgs) -> ToolResult:
         headers={"Authorization": f"Bearer {token}"},
     )
     _raise_gmail_error(verify.status_code, verify.text, "verify the sent email")
-    sent_headers = _headers((verify.json().get("payload") or {}))
+    sent_headers = _headers(verify.json().get("payload") or {})
     if sent_headers.get("subject") != args.subject or args.to.lower() not in sent_headers.get(
         "to", ""
     ).lower():
@@ -432,6 +565,18 @@ READ_SPEC = ToolSpec(
     description="Read the full plain-text content of one Gmail message by message_id.",
     args_model=ReadEmailArgs,
     handler=read_email,
+)
+
+TRASH_SPEC = ToolSpec(
+    name="trash_email",
+    description=(
+        "Move one exact Gmail message to Trash by message_id. First search to resolve the "
+        "message, then request confirmation. This is reversible and never permanently erases mail."
+    ),
+    args_model=TrashEmailArgs,
+    handler=trash_email,
+    confirmation_required=True,
+    prepare=prepare_trash_email,
 )
 
 DRAFT_SPEC = ToolSpec(

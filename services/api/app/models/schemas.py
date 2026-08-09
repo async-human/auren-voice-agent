@@ -16,8 +16,8 @@ class HealthResponse(BaseModel):
 
 
 class VoiceTokenResponse(BaseModel):
-    serverUrl: str  # noqa: N815 - the browser client expects camelCase.
-    participantToken: str  # noqa: N815
+    serverUrl: str
+    participantToken: str
 
 
 class ToolDescription(BaseModel):
@@ -67,6 +67,8 @@ class MemoryItem(BaseModel):
 class MemoryContextResponse(BaseModel):
     user_id: str
     display_name: str | None = None
+    email: str | None = None
+    google_account_email: str | None = None
     profile_summary: str | None = None
     preferences: str | None = None
     memories: list[MemoryItem] = Field(default_factory=list)

@@ -12,7 +12,15 @@ from app.models.tables import Base, PendingAction
 from app.services import action_execution, google_oauth
 from app.services.action_payloads import ENCRYPTED_PREFIX
 from app.tools.base import ToolContext, ToolError
-from app.tools.email_tools import DraftEmailArgs, SearchEmailsArgs, draft_email, search_emails
+from app.tools.email_tools import (
+    DraftEmailArgs,
+    SearchEmailsArgs,
+    TrashEmailArgs,
+    draft_email,
+    prepare_trash_email,
+    search_emails,
+    trash_email,
+)
 
 
 def _encoded(text: str) -> str:
@@ -173,8 +181,8 @@ async def test_editing_a_gmail_draft_supersedes_the_old_send_approval(
 
     def respond(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if request.method in {"POST", "PUT"} and (
-            path.endswith("/drafts") or path.endswith("/drafts/draft-1")
+        if request.method in {"POST", "PUT"} and path.endswith(
+            ("/drafts", "/drafts/draft-1")
         ):
             state["raw"] = json.loads(request.content)["message"]["raw"]
             return httpx.Response(200, json={"id": "draft-1"})
@@ -201,6 +209,61 @@ async def test_editing_a_gmail_draft_supersedes_the_old_send_approval(
         current = await context.session.get(PendingAction, second.data["action_id"])
         assert old is not None and old.status == "superseded"
         assert current is not None and current.status == "pending"
+    finally:
+        await context.http.aclose()
+        await context.session.close()
+        await engine.dispose()
+
+
+async def test_email_delete_moves_exact_message_to_trash_and_verifies(
+    settings,
+    tmp_path,
+    valid_google_token,
+) -> None:
+    trashed = False
+    history_id = "history-1"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal trashed, history_id
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/messages/message-1"):
+            minimal = request.url.params.get("format") == "minimal"
+            payload = {
+                "id": "message-1",
+                "threadId": "thread-1",
+                "historyId": history_id,
+                "labelIds": ["TRASH"] if trashed else ["INBOX"],
+            }
+            if not minimal:
+                payload["payload"] = {
+                    "headers": [
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Subject", "value": "Delete me"},
+                        {"name": "Date", "value": "9 August 2026"},
+                    ]
+                }
+            return httpx.Response(200, json=payload)
+        if request.method == "POST" and path.endswith("/messages/message-1/trash"):
+            trashed = True
+            history_id = "history-2"
+            return httpx.Response(
+                200,
+                json={"id": "message-1", "historyId": history_id, "labelIds": ["TRASH"]},
+            )
+        return httpx.Response(404)
+
+    context, engine = await _context(settings, tmp_path, respond)
+    try:
+        proposal = await prepare_trash_email(
+            context, TrashEmailArgs(message_id="message-1")
+        )
+        assert "Delete me" in proposal.preview
+        assert trashed is False
+        result = await trash_email(
+            context, TrashEmailArgs.model_validate(proposal.arguments)
+        )
+        assert result.data == {"id": "message-1", "verified": True, "trashed": True}
+        assert trashed is True
     finally:
         await context.http.aclose()
         await context.session.close()

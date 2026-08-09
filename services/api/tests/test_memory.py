@@ -19,7 +19,11 @@ async def _user_id(client: AsyncClient, token: str) -> str:
 async def test_memory_flush_and_context(
     client: AsyncClient, make_token: Callable[..., str]
 ) -> None:
-    token = make_token(subject="user_clerk_alice", name="Alice Example")
+    token = make_token(
+        subject="user_clerk_alice",
+        name="Alice Example",
+        email="alice@example.com",
+    )
     user_id = await _user_id(client, token)
 
     flush = await client.post(
@@ -53,6 +57,8 @@ async def test_memory_flush_and_context(
     assert context.status_code == 200
     payload = context.json()
     assert payload["display_name"] == "Alice Example"
+    assert payload["email"] == "alice@example.com"
+    assert "Authenticated sign-in email: alice@example.com" in payload["instructions_block"]
     assert "Alice" in payload["greeting"]
     assert "robotics" in (payload["last_session_summary"] or "").lower()
     assert len(payload["memories"]) == 2
