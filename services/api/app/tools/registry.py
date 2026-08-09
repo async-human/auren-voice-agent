@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.services import approvals
+from app.services.action_payloads import protect_arguments, redact_arguments, redact_details
 from app.tools import (
     actions,
     calendar,
@@ -37,6 +38,7 @@ SPECS: tuple[ToolSpec, ...] = (
     calendar.FREE_SPEC,
     calendar.CREATE_SPEC,
     email_tools.SEARCH_SPEC,
+    email_tools.READ_SPEC,
     email_tools.DRAFT_SPEC,
     email_tools.SEND_SPEC,
     actions.LIST_PENDING_SPEC,
@@ -93,13 +95,15 @@ async def invoke(
             )
             raise ToolError(f"Invalid arguments for {name}. {problems}") from error
 
-        preview = _build_preview(name, args.model_dump())
+        raw_arguments = args.model_dump()
+        preview = build_preview(name, raw_arguments)
+        stored_arguments = protect_arguments(context.settings, name, raw_arguments)
         action = await approvals.propose_action(
             context.session,
             user_id=context.user_id,
             tool=name,
-            arguments=args.model_dump(),
-            preview=preview,
+            arguments=stored_arguments,
+            preview=build_audit_preview(name, raw_arguments),
             idempotency_key=idempotency_key,
         )
         return ToolResult(
@@ -110,7 +114,6 @@ async def invoke(
             data={
                 "pending": True,
                 "action_id": action.id,
-                "confirm_token": action.confirm_token,
                 "tool": name,
                 "preview": preview,
             },
@@ -123,14 +126,14 @@ async def invoke(
         tool=name,
         event_type="executed",
         actor="agent",
-        arguments=arguments,
+        arguments=redact_arguments(name, arguments),
         summary=result.summary,
-        details=result.data,
+        details=redact_details(name, result.data),
     )
     return result
 
 
-def _build_preview(tool: str, arguments: dict[str, Any]) -> str:
+def build_preview(tool: str, arguments: dict[str, Any]) -> str:
     if tool == "create_calendar_event":
         attendees = arguments.get("attendees") or []
         who = f" with {', '.join(attendees)}" if attendees else ""
@@ -141,9 +144,18 @@ def _build_preview(tool: str, arguments: dict[str, Any]) -> str:
             f"{who}{meet}."
         )
     if tool == "send_email":
-        body = (arguments.get("body") or "")[:280]
+        body = arguments.get("body") or ""
         return (
             f"Send email to {arguments.get('to')} subject '{arguments.get('subject')}'. "
             f"Body: {body}"
         )
     return f"Run {tool} with {arguments}"
+
+
+def build_audit_preview(tool: str, arguments: dict[str, Any]) -> str:
+    if tool == "send_email":
+        return (
+            f"Send email to {arguments.get('to')} subject "
+            f"'{arguments.get('subject')}'. Body encrypted; review in authenticated UI."
+        )
+    return build_preview(tool, arguments)

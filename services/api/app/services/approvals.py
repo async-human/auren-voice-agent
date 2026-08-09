@@ -161,6 +161,47 @@ async def list_pending(session: AsyncSession, user_id: str, limit: int = 10) -> 
     return alive
 
 
+async def supersede_pending(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    tool: str,
+    argument_key: str,
+    argument_value: object,
+) -> int:
+    """Invalidate older approvals when a mutable resource is revised."""
+    rows = (
+        await session.scalars(
+            select(PendingAction).where(
+                PendingAction.user_id == user_id,
+                PendingAction.tool == tool,
+                PendingAction.status == "pending",
+            )
+        )
+    ).all()
+    changed = 0
+    for row in rows:
+        if (row.arguments or {}).get(argument_key) != argument_value:
+            continue
+        row.status = "superseded"
+        row.resolved_at = utcnow()
+        session.add(
+            ActionAudit(
+                user_id=user_id,
+                tool=tool,
+                arguments=row.arguments,
+                event_type="superseded",
+                actor="system",
+                pending_action_id=row.id,
+                summary="Superseded by a newer draft version",
+            )
+        )
+        changed += 1
+    if changed:
+        await session.commit()
+    return changed
+
+
 async def resolve_action(
     session: AsyncSession,
     action: PendingAction,

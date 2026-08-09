@@ -205,6 +205,7 @@ class OAuthConnection(Base):
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     provider: Mapped[str] = mapped_column(String(32))  # google
     account_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    timezone_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scopes: Mapped[str] = mapped_column(Text, default="")
     access_token_encrypted: Mapped[str] = mapped_column(Text)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -213,6 +214,19 @@ class OAuthConnection(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=func.now()
     )
+
+
+class OAuthState(Base):
+    """One-time OAuth callback state shared safely across API replicas."""
+
+    __tablename__ = "oauth_states"
+    __table_args__ = (Index("ix_oauth_states_expires", "expires_at"),)
+
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="google")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class PendingAction(Base):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services import approvals
+from app.services.action_payloads import reveal_arguments
 from app.tools import registry
 from app.tools.base import ToolContext, ToolError, ToolResult
 
@@ -24,7 +25,8 @@ async def execute_pending_action(
         )
 
     try:
-        result = await registry.execute_handler(context, action.tool, action.arguments)
+        arguments = reveal_arguments(context.settings, action.tool, action.arguments)
+        result = await registry.execute_handler(context, action.tool, arguments)
     except Exception as error:  # noqa: BLE001
         await approvals.resolve_action(
             context.session,

@@ -8,6 +8,7 @@ keeps the GPU pod a replaceable inference runtime.
 from __future__ import annotations
 
 import logging
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -91,6 +92,8 @@ class ToolGateway:
             self._pending_invocations[action_id] = (tool, invocation_id)
         elif tool in {"confirm_pending_action", "reject_pending_action"}:
             resolved_action_id = arguments.get("action_id")
+            if not isinstance(resolved_action_id, str) and isinstance(data, dict):
+                resolved_action_id = data.get("action_id")
             if isinstance(resolved_action_id, str):
                 pending_invocation = self._pending_invocations.pop(
                     resolved_action_id,
@@ -111,7 +114,10 @@ class ToolGateway:
             action_id=action_id if isinstance(action_id, str) else None,
         )
         summary = str(body.get("summary") or "Done.")
-        return f"{tool} succeeded: {summary}"
+        return json.dumps(
+            {"tool": tool, "ok": True, "summary": summary, "data": data or {}},
+            ensure_ascii=False,
+        )
 
     async def _notify(
         self,
@@ -214,24 +220,47 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         )
 
     @function_tool
-    async def list_calendar_events(days_ahead: int = 7, query: str | None = None) -> str:
-        """List upcoming Google Calendar events."""
+    async def list_calendar_events(
+        period: Literal["today", "tomorrow", "upcoming", "custom"] = "upcoming",
+        days_ahead: int = 7,
+        query: str | None = None,
+        timezone: str | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
+    ) -> str:
+        """List calendar events in a precise local-time window.
+
+        Use period=today for the user's complete local calendar day, including
+        events earlier today. Use custom with ISO start_at and end_at.
+        """
         return await gateway.invoke(
             "list_calendar_events",
             user_id,
-            {"days_ahead": days_ahead, "query": query},
+            {
+                "period": period,
+                "days_ahead": days_ahead,
+                "query": query,
+                "timezone": timezone,
+                "start_at": start_at,
+                "end_at": end_at,
+            },
         )
 
     @function_tool
     async def find_free_slots(
         days_ahead: int = 7,
         duration_minutes: int = 30,
+        timezone: str | None = None,
     ) -> str:
         """Find free slots on the user's Google Calendar."""
         return await gateway.invoke(
             "find_free_slots",
             user_id,
-            {"days_ahead": days_ahead, "duration_minutes": duration_minutes},
+            {
+                "days_ahead": days_ahead,
+                "duration_minutes": duration_minutes,
+                "timezone": timezone,
+            },
         )
 
     @function_tool
@@ -260,24 +289,66 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         )
 
     @function_tool
-    async def search_emails(query: str, max_results: int = 5) -> str:
-        """Search Gmail with a Gmail query string."""
+    async def search_emails(
+        query: str = "in:inbox",
+        max_results: int = 5,
+        include_body: bool = False,
+    ) -> str:
+        """Search Gmail newest-first.
+
+        For the latest inbox email use query=in:inbox, max_results=1 and
+        include_body=true.
+        """
         return await gateway.invoke(
-            "search_emails", user_id, {"query": query, "max_results": max_results}
+            "search_emails",
+            user_id,
+            {
+                "query": query,
+                "max_results": max_results,
+                "include_body": include_body,
+            },
         )
 
     @function_tool
-    async def draft_email(to: str, subject: str, body: str) -> str:
-        """Draft an email for review without sending."""
+    async def read_email(message_id: str) -> str:
+        """Read one complete Gmail message returned by search_emails."""
         return await gateway.invoke(
-            "draft_email", user_id, {"to": to, "subject": subject, "body": body}
+            "read_email", user_id, {"message_id": message_id}
         )
 
     @function_tool
-    async def send_email(to: str, subject: str, body: str) -> str:
+    async def draft_email(
+        to: str,
+        subject: str,
+        body: str,
+        draft_id: str | None = None,
+    ) -> str:
+        """Create/update a real Gmail draft and prepare approval; never send it."""
+        return await gateway.invoke(
+            "draft_email",
+            user_id,
+            {"to": to, "subject": subject, "body": body, "draft_id": draft_id},
+        )
+
+    @function_tool
+    async def send_email(
+        to: str,
+        subject: str,
+        body: str,
+        draft_id: str | None = None,
+        draft_content_hash: str | None = None,
+    ) -> str:
         """Send email via Gmail. Requires explicit user confirmation."""
         return await gateway.invoke(
-            "send_email", user_id, {"to": to, "subject": subject, "body": body}
+            "send_email",
+            user_id,
+            {
+                "to": to,
+                "subject": subject,
+                "body": body,
+                "draft_id": draft_id,
+                "draft_content_hash": draft_content_hash,
+            },
         )
 
     @function_tool
@@ -442,6 +513,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         find_free_slots,
         create_calendar_event,
         search_emails,
+        read_email,
         draft_email,
         send_email,
         list_pending_actions,

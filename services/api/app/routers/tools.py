@@ -10,6 +10,7 @@ from app.config import Settings
 from app.dependencies import get_http_client, get_session, get_settings
 from app.models.schemas import ToolDescription, ToolInvocation, ToolInvocationResponse
 from app.security.service_auth import require_service_token
+from app.services import google_oauth
 from app.tools import registry
 from app.tools.base import ToolContext, ToolError
 
@@ -60,6 +61,13 @@ async def invoke_tool(
             idempotency_key=invocation.idempotency_key,
         )
     except ToolError as error:
+        return ToolInvocationResponse(
+            tool=invocation.tool,
+            ok=False,
+            summary=str(error),
+            error=str(error),
+        )
+    except google_oauth.GoogleAuthError as error:
         return ToolInvocationResponse(
             tool=invocation.tool,
             ok=False,

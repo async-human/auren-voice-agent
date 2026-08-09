@@ -66,7 +66,6 @@ async def list_pending_actions(context: ToolContext, args: ListPendingArgs) -> T
                     "id": row.id,
                     "tool": row.tool,
                     "preview": row.preview,
-                    "confirm_token": row.confirm_token,
                     "expires_at": row.expires_at.isoformat() if row.expires_at else None,
                 }
                 for row in rows
