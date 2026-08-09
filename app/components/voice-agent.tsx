@@ -19,11 +19,19 @@ type Message = {
 };
 
 type InterimMessage = Pick<Message, "role" | "text">;
-type ToolActivityStatus = "started" | "completed" | "failed";
+type ToolActivityStatus =
+  | "started"
+  | "awaiting_approval"
+  | "completed"
+  | "cancelled"
+  | "failed";
 type ToolActivity = {
   tool: string;
   invocationId: string;
   status: ToolActivityStatus;
+  durationMs?: number;
+  actionId?: string;
+  receivedAt: number;
 };
 
 const toolLabels: Record<string, string> = {
@@ -54,6 +62,42 @@ const toolLabels: Record<string, string> = {
   forget: "Memory",
 };
 
+const toolActions: Record<string, string> = {
+  get_current_time: "Checking the time",
+  get_weather: "Checking the weather",
+  create_reminder: "Creating a reminder",
+  list_reminders: "Loading your reminders",
+  save_note: "Saving a note",
+  search_notes: "Searching your notes",
+  search_web: "Searching the web",
+  get_page_context: "Reading the shared page",
+  list_calendar_events: "Checking your calendar",
+  find_free_slots: "Finding open time",
+  create_calendar_event: "Preparing a calendar event",
+  search_emails: "Searching your email",
+  draft_email: "Preparing an email draft",
+  send_email: "Preparing to send email",
+  confirm_pending_action: "Completing the approved action",
+  reject_pending_action: "Cancelling the pending action",
+  list_pending_actions: "Checking pending actions",
+  start_workflow: "Starting a workflow",
+  update_workflow: "Updating the workflow",
+  complete_workflow: "Completing the workflow",
+  schedule_followup: "Scheduling a follow-up",
+  check_tool_status: "Checking tool availability",
+  recall: "Searching memory",
+  remember: "Updating memory",
+  forget: "Removing a memory",
+};
+
+const toolStatusLabels: Record<ToolActivityStatus, string> = {
+  started: "In progress",
+  awaiting_approval: "Approval needed",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  failed: "Needs attention",
+};
+
 type PageContextMeta = {
   present: boolean;
   title?: string | null;
@@ -63,6 +107,76 @@ type PageContextMeta = {
 
 function toolLabel(tool: string): string {
   return toolLabels[tool] ?? tool.replaceAll("_", " ");
+}
+
+function toolAction(tool: string): string {
+  return toolActions[tool] ?? `Using ${toolLabel(tool)}`;
+}
+
+function toolKind(
+  tool: string,
+): "calendar" | "search" | "weather" | "memory" | "workflow" | "utility" {
+  if (/calendar|slot|reminder|followup/.test(tool)) return "calendar";
+  if (/search|page_context|email/.test(tool)) return "search";
+  if (/weather/.test(tool)) return "weather";
+  if (/recall|remember|forget|note/.test(tool)) return "memory";
+  if (/workflow|pending_action/.test(tool)) return "workflow";
+  return "utility";
+}
+
+function formatToolTiming(activity: ToolActivity, now: number): string {
+  if (activity.status === "awaiting_approval") return "Waiting";
+  const duration =
+    activity.status === "started"
+      ? Math.max(0, now - activity.receivedAt)
+      : activity.durationMs;
+  if (duration === undefined) return "";
+  if (duration < 1000) return activity.status === "started" ? "Now" : "<1s";
+  const seconds = duration / 1000;
+  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+}
+
+function ToolGlyph({ tool }: { tool: string }) {
+  const kind = toolKind(tool);
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      {kind === "calendar" && (
+        <>
+          <rect x="4" y="5" width="16" height="15" rx="3" />
+          <path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h6" />
+        </>
+      )}
+      {kind === "search" && (
+        <>
+          <circle cx="10.5" cy="10.5" r="5.5" />
+          <path d="m15 15 4.5 4.5" />
+        </>
+      )}
+      {kind === "weather" && (
+        <path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11-1.2A4.6 4.6 0 0 0 7 18Z" />
+      )}
+      {kind === "memory" && (
+        <>
+          <path d="M12 4c4.4 0 8 1.5 8 3.4s-3.6 3.4-8 3.4-8-1.5-8-3.4S7.6 4 12 4Z" />
+          <path d="M4 7.4v4.5c0 1.9 3.6 3.4 8 3.4s8-1.5 8-3.4V7.4M4 12v4.6c0 1.9 3.6 3.4 8 3.4s8-1.5 8-3.4V12" />
+        </>
+      )}
+      {kind === "workflow" && (
+        <>
+          <circle cx="6" cy="6" r="2" />
+          <circle cx="18" cy="12" r="2" />
+          <circle cx="6" cy="18" r="2" />
+          <path d="M8 6h2a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8 18h2a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3" />
+        </>
+      )}
+      {kind === "utility" && (
+        <>
+          <circle cx="12" cy="12" r="7" />
+          <path d="M12 8v4l2.5 2" />
+        </>
+      )}
+    </svg>
+  );
 }
 
 const emojiPattern = /[\p{Extended_Pictographic}\u200d\ufe0f]/gu;
@@ -122,7 +236,8 @@ export default function VoiceAgent() {
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isConnectionsOpen, setIsConnectionsOpen] = useState(false);
-  const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
+  const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
+  const [activityNow, setActivityNow] = useState(() => Date.now());
   const [pageContext, setPageContext] = useState<PageContextMeta | null>(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const roomRef = useRef<Room | null>(null);
@@ -132,7 +247,6 @@ export default function VoiceAgent() {
   const audioElementsRef = useRef<HTMLMediaElement[]>([]);
   const voiceMutedRef = useRef(false);
   const nextId = useRef(1);
-  const toolActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Dedupe across lk.transcription + auren.transcript (same reply can arrive 2–3×).
   const recentTranscriptKeysRef = useRef<Map<string, number>>(new Map());
 
@@ -152,7 +266,7 @@ export default function VoiceAgent() {
     roomRef.current = null;
     if (!room) {
       setInterim(null);
-      setToolActivity(null);
+      setToolActivities([]);
       setPageContext(null);
       setIsScreenSharing(false);
       setIsMicMuted(false);
@@ -162,10 +276,6 @@ export default function VoiceAgent() {
 
     detachRoomMedia(room);
     recentTranscriptKeysRef.current.clear();
-    if (toolActivityTimerRef.current) {
-      clearTimeout(toolActivityTimerRef.current);
-      toolActivityTimerRef.current = null;
-    }
     try {
       // Calling disconnect while still Disconnected tries to send leave and
       // LiveKit logs "cannot send signal request before connected".
@@ -176,13 +286,20 @@ export default function VoiceAgent() {
       // Teardown races (unmount during connect) are safe to ignore.
     }
     setInterim(null);
-    setToolActivity(null);
+    setToolActivities([]);
     setPageContext(null);
     setIsScreenSharing(false);
     setIsMicMuted(false);
     setPhase("idle");
     setNotice("Session ended");
   }, [detachRoomMedia]);
+
+  useEffect(() => {
+    if (!toolActivities.some((activity) => activity.status === "started")) return;
+    setActivityNow(Date.now());
+    const timer = window.setInterval(() => setActivityNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [toolActivities]);
 
   const refreshPageContext = useCallback(async () => {
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -221,6 +338,7 @@ export default function VoiceAgent() {
   const startSession = useCallback(async (enableMicrophone = true) => {
     if (roomRef.current) return roomRef.current;
     const epoch = ++sessionEpochRef.current;
+    setToolActivities([]);
     setPhase("connecting");
     setNotice("Securing a realtime session");
 
@@ -434,30 +552,56 @@ export default function VoiceAgent() {
             event.type !== "tool_activity" ||
             typeof event.tool !== "string" ||
             typeof event.invocationId !== "string" ||
-            !["started", "completed", "failed"].includes(event.status ?? "")
+            ![
+              "started",
+              "awaiting_approval",
+              "completed",
+              "cancelled",
+              "failed",
+            ].includes(event.status ?? "")
           ) {
             return;
           }
 
-          if (toolActivityTimerRef.current) {
-            clearTimeout(toolActivityTimerRef.current);
-            toolActivityTimerRef.current = null;
-          }
+          const receivedAt = Date.now();
           const activity = {
             tool: event.tool,
             invocationId: event.invocationId,
             status: event.status as ToolActivityStatus,
+            durationMs:
+              typeof event.durationMs === "number" ? event.durationMs : undefined,
+            actionId:
+              typeof event.actionId === "string" ? event.actionId : undefined,
+            receivedAt,
           };
-          setToolActivity(activity);
-
-          if (activity.status !== "started") {
-            toolActivityTimerRef.current = setTimeout(() => {
-              setToolActivity((current) =>
-                current?.invocationId === activity.invocationId ? null : current,
-              );
-              toolActivityTimerRef.current = null;
-            }, 1800);
-          }
+          setActivityNow(receivedAt);
+          setToolActivities((current) => {
+            const existing = current.find(
+              (item) => item.invocationId === activity.invocationId,
+            );
+            const updated = {
+              ...activity,
+              durationMs: activity.durationMs ?? existing?.durationMs,
+              actionId: activity.actionId ?? existing?.actionId,
+              receivedAt: existing?.receivedAt ?? activity.receivedAt,
+            };
+            const next = [
+              updated,
+              ...current.filter(
+                (item) => item.invocationId !== activity.invocationId,
+              ),
+            ];
+            const unsettled = next.filter(
+              (item) =>
+                item.status === "started" || item.status === "awaiting_approval",
+            );
+            const settled = next.filter(
+              (item) =>
+                item.status !== "started" &&
+                item.status !== "awaiting_approval",
+            );
+            return [...unsettled, ...settled].slice(0, 6);
+          });
         } catch {
           // Ignore unrelated or malformed data-channel messages.
         }
@@ -526,12 +670,8 @@ export default function VoiceAgent() {
       });
 
       activeRoom.on(RoomEvent.Disconnected, () => {
-        if (toolActivityTimerRef.current) {
-          clearTimeout(toolActivityTimerRef.current);
-          toolActivityTimerRef.current = null;
-        }
         roomRef.current = null;
-        setToolActivity(null);
+        setToolActivities([]);
         setIsScreenSharing(false);
         setPhase("idle");
         setNotice("Disconnected");
@@ -653,6 +793,23 @@ export default function VoiceAgent() {
     }
   }, [isScreenSharing, startSession]);
 
+  const handleActionResolved = useCallback(
+    (actionId: string, decision: "confirm" | "reject") => {
+      setToolActivities((current) =>
+        current.map((activity) =>
+          activity.actionId === actionId &&
+          activity.status === "awaiting_approval"
+            ? {
+                ...activity,
+                status: decision === "confirm" ? "completed" : "cancelled",
+              }
+            : activity,
+        ),
+      );
+    },
+    [],
+  );
+
   const toggleVoicePlayback = useCallback(() => {
     const nextMuted = !isVoiceMuted;
     voiceMutedRef.current = nextMuted;
@@ -720,6 +877,24 @@ export default function VoiceAgent() {
     phase === "thinking" || (phase === "speaking" && latestMessage?.role === "user");
   const hasConversation =
     messages.length > 0 || Boolean(interim) || phase === "thinking" || phase === "speaking";
+  const activeToolActivity = toolActivities.find(
+    (activity) => activity.status === "started",
+  );
+  const approvalActivity = toolActivities.find(
+    (activity) => activity.status === "awaiting_approval",
+  );
+  const presenceHeading = activeToolActivity
+    ? toolAction(activeToolActivity.tool)
+    : approvalActivity
+      ? "Ready when you are"
+      : labels[phase];
+  const presenceDescription = activeToolActivity
+    ? "Auren is working securely. You can follow each step below."
+    : approvalActivity
+      ? "A consequential action is prepared and will not run without your approval."
+      : phase === "idle"
+        ? "Begin with your voice, or switch to typing whenever you prefer."
+        : notice || "Your secure realtime session is active.";
 
   return (
     <>
@@ -770,35 +945,105 @@ export default function VoiceAgent() {
           <ConnectionsPanel
             open={isConnectionsOpen}
             onClose={() => setIsConnectionsOpen(false)}
+            onActionResolved={handleActionResolved}
           />
         )}
 
         <div className="studioGrid">
           <aside className="presencePanel" aria-label="Voice session status">
-            <p className="presenceEyebrow">
-              <span className="liveDot" aria-hidden="true" />
-              {phase === "idle" ? "Auren is here" : "Private session active"}
-            </p>
-            <div className={`presenceOrb presenceOrb-${phase}`} aria-hidden="true">
-              <span className="presenceAura" />
-              <span className="presenceOrbit presenceOrbitA" />
-              <span className="presenceOrbit presenceOrbitB" />
-              <span className="presenceMembrane">
-                <i /><i />
-              </span>
-              <span className="presenceCore" />
-              <span className="presenceWave">
-                <i /><i /><i /><i /><i />
-              </span>
-            </div>
-            <div className="presenceCopy">
-              <h1>{labels[phase]}</h1>
-              <p>
-                {phase === "idle"
-                  ? "Begin with your voice, or switch to typing whenever you prefer."
-                  : notice || "Your secure realtime session is active."}
+            <div className="presenceHero">
+              <p className="presenceEyebrow">
+                <span className="liveDot" aria-hidden="true" />
+                {activeToolActivity
+                  ? "Auren is taking action"
+                  : phase === "idle"
+                    ? "Auren is here"
+                    : "Private session active"}
               </p>
+              <div
+                className={`presenceOrb presenceOrb-${phase} ${
+                  activeToolActivity ? "presenceOrb-toolActive" : ""
+                }`}
+                aria-hidden="true"
+              >
+                <span className="presenceAura" />
+                <span className="presenceOrbit presenceOrbitA" />
+                <span className="presenceOrbit presenceOrbitB" />
+                <span className="presenceMembrane">
+                  <i /><i />
+                </span>
+                <span className="presenceCore" />
+                <span className="presenceWave">
+                  <i /><i /><i /><i /><i />
+                </span>
+              </div>
+              <div className="presenceCopy" aria-live="polite">
+                <h1>{presenceHeading}</h1>
+                <p>{presenceDescription}</p>
+              </div>
             </div>
+
+            <section className="activityRail" aria-label="Tool activity">
+              <p className="srOnly" aria-live="polite" aria-atomic="true">
+                {toolActivities[0]
+                  ? `${toolLabel(toolActivities[0].tool)}: ${toolStatusLabels[toolActivities[0].status]}`
+                  : "No tool activity yet"}
+              </p>
+              <div className="activityRailHead">
+                <div>
+                  <span>Live activity</span>
+                  <strong>What Auren is doing</strong>
+                </div>
+                <span className={activeToolActivity ? "activityLive" : "activityQuiet"}>
+                  <i aria-hidden="true" />
+                  {activeToolActivity ? "Live" : toolActivities.length ? "Recent" : "Ready"}
+                </span>
+              </div>
+
+              {toolActivities.length === 0 ? (
+                <div className="activityEmpty">
+                  <span aria-hidden="true"><i /><i /><i /></span>
+                  <p>
+                    Tool progress will appear here as Auren searches, schedules,
+                    remembers, or takes action.
+                  </p>
+                </div>
+              ) : (
+                <ol className="toolTimeline">
+                  {toolActivities.map((activity) => (
+                    <li
+                      className={`toolTimelineItem toolTimelineItem-${activity.status}`}
+                      key={activity.invocationId}
+                    >
+                      <span className="toolTimelineGlyph">
+                        <ToolGlyph tool={activity.tool} />
+                      </span>
+                      <span className="toolTimelineCopy">
+                        <strong>{toolLabel(activity.tool)}</strong>
+                        <small>
+                          <i aria-hidden="true" />
+                          {activity.status === "started"
+                            ? toolAction(activity.tool)
+                            : toolStatusLabels[activity.status]}
+                        </small>
+                      </span>
+                      <span className="toolTimelineMeta">
+                        <span>{formatToolTiming(activity, activityNow)}</span>
+                        {activity.status === "awaiting_approval" && (
+                          <button
+                            type="button"
+                            onClick={() => setIsConnectionsOpen(true)}
+                          >
+                            Review
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+
             <div className="presenceTrust">
               <span aria-hidden="true"><i /></span>
               <p><strong>Private by design</strong>Your actions remain yours to approve.</p>
@@ -871,27 +1116,6 @@ export default function VoiceAgent() {
             </section>
 
             <section className="dock">
-          <div className="toolActivitySlot" aria-live="polite" aria-atomic="true">
-            {toolActivity && (
-              <div
-                className={`toolActivity toolActivity-${toolActivity.status}`}
-                key={`${toolActivity.invocationId}-${toolActivity.status}`}
-              >
-                <span className="toolActivityMark" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>
-                  {toolActivity.status === "started"
-                    ? `Using ${toolLabel(toolActivity.tool)}`
-                    : toolActivity.status === "completed"
-                      ? `${toolLabel(toolActivity.tool)} complete`
-                      : `${toolLabel(toolActivity.tool)} unavailable`}
-                </span>
-              </div>
-            )}
-          </div>
           <button
             className="mic"
             onClick={() => void toggleMicrophone()}

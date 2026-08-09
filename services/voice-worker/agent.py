@@ -758,7 +758,7 @@ async def auren_session(ctx: agents.JobContext):
     transcript = TranscriptBuffer()
 
     if TOOL_GATEWAY_BASE_URL:
-        async def publish_tool_activity(event: dict[str, str]) -> None:
+        async def publish_tool_activity(event: dict[str, str | int]) -> None:
             payload = json.dumps({"type": "tool_activity", **event}).encode("utf-8")
             await ctx.room.local_participant.publish_data(
                 payload,
