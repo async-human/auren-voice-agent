@@ -1,11 +1,11 @@
 import asyncio
-from collections.abc import AsyncIterable, AsyncIterator
 import io
 import json
 import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterable, AsyncIterator
 
 import av
 import httpx
@@ -22,7 +22,6 @@ from livekit.agents import (
 )
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
-
 from memory import (
     TranscriptBuffer,
     distill_with_llm,
@@ -62,12 +61,8 @@ CHATTERBOX_TIMEOUT_SECONDS = max(
 CHATTERBOX_MAX_SEGMENT_CHARS = max(
     60, int(os.getenv("CHATTERBOX_MAX_SEGMENT_CHARS", "120"))
 )
-CHATTERBOX_RETRY_ATTEMPTS = max(
-    1, int(os.getenv("CHATTERBOX_RETRY_ATTEMPTS", "1"))
-)
-LLM_MAX_COMPLETION_TOKENS = max(
-    64, int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "220"))
-)
+CHATTERBOX_RETRY_ATTEMPTS = max(1, int(os.getenv("CHATTERBOX_RETRY_ATTEMPTS", "1")))
+LLM_MAX_COMPLETION_TOKENS = max(64, int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "220")))
 # Qwen3 defaults to "thinking" which can burn minutes of tokens before speech.
 LLM_DISABLE_THINKING = os.getenv("LLM_DISABLE_THINKING", "true").lower() in {
     "1",
@@ -97,9 +92,17 @@ INSTRUCTIONS = (
 TOOL_INSTRUCTIONS = (
     " You convert spoken objectives into completed, verified outcomes. "
     "Workflow loop: understand the goal, recall preferences from memory, ask only "
-    "for missing details, start_workflow with a short plan, execute tools, request "
-    "confirmation for consequential actions, verify success from tool results, then "
-    "complete_workflow and remember durable facts. "
+    "for missing details, execute tools, request confirmation for consequential "
+    "actions, verify success from tool results, and remember durable facts. For every "
+    "task requiring two or more tool calls, call start_workflow first with 2-8 concise, "
+    "user-facing plan steps. The plan is displayed live, so make each step a concrete "
+    "outcome rather than private reasoning. After each completed plan step call "
+    "update_workflow with current_step equal to the number of completed steps and a "
+    "short factual outcome note. Call complete_workflow only after verifying the final "
+    "result. Independent read-only steps may run in parallel; dependent steps must run "
+    "in order, and consequential writes must never race against the reads that resolve "
+    "their target. Never expose private chain-of-thought; Auren's activity UI provides "
+    "safe decision summaries, plans, tool status, and verified outcomes instead. "
     "Never tell the user how they could do something in Google Calendar or Gmail — "
     "do it with tools when connected. If Google is not connected, say so and ask "
     "them to connect Google in Auren. "
@@ -132,13 +135,7 @@ TOOL_INSTRUCTIONS = (
     "Use memory before asking preference questions. Keep voice replies concise."
 )
 
-_EMOJI_RE = re.compile(
-    "["
-    "\U0001F300-\U0001FAFF"
-    "\u2600-\u27BF"
-    "\u200D\uFE0F"
-    "]"
-)
+_EMOJI_RE = re.compile("[\U0001f300-\U0001faff\u2600-\u27bf\u200d\ufe0f]")
 
 
 def _clean_assistant_text(text: str) -> str:
@@ -209,7 +206,9 @@ def _decode_audio_frames(audio_bytes: bytes) -> list[rtc.AudioFrame]:
 
 
 def _is_weather_request(text: str) -> bool:
-    return bool(re.search(r"\b(weather|forecast|temperature|rain(?:ing)?)\b", text, re.I))
+    return bool(
+        re.search(r"\b(weather|forecast|temperature|rain(?:ing)?)\b", text, re.I)
+    )
 
 
 def _is_web_search_request(text: str) -> bool:
@@ -336,9 +335,7 @@ _SOFT_LOCATION_RE = re.compile(
     r"([A-Za-z][A-Za-z .'-]{1,40})",
     re.I,
 )
-_SOFT_POSSESSIVE_WEATHER_RE = re.compile(
-    r"\b([A-Z][a-z]{2,40})'s weather\b"
-)
+_SOFT_POSSESSIVE_WEATHER_RE = re.compile(r"\b([A-Z][a-z]{2,40})'s weather\b")
 
 
 def _location_from_memory_context(memory_context: dict | None) -> str | None:
@@ -438,7 +435,11 @@ class Auren(Agent):
         if not text:
             return
 
-        if self._gateway is not None and self._user_id is not None and _is_confirm_request(text):
+        if (
+            self._gateway is not None
+            and self._user_id is not None
+            and _is_confirm_request(text)
+        ):
             try:
                 result = await self._gateway.invoke(
                     "confirm_pending_action", self._user_id, {}
@@ -456,7 +457,11 @@ class Auren(Agent):
             await self.update_chat_ctx(turn_ctx)
             return
 
-        if self._gateway is not None and self._user_id is not None and _is_reject_request(text):
+        if (
+            self._gateway is not None
+            and self._user_id is not None
+            and _is_reject_request(text)
+        ):
             try:
                 result = await self._gateway.invoke(
                     "reject_pending_action", self._user_id, {}
@@ -655,7 +660,10 @@ class Auren(Agent):
                                 response.status_code,
                                 response.text[:500],
                             )
-                            if response.status_code < 500 and response.status_code != 429:
+                            if (
+                                response.status_code < 500
+                                and response.status_code != 429
+                            ):
                                 break
                         elif not response.headers.get("content-type", "").startswith(
                             "audio/"
@@ -774,7 +782,8 @@ async def auren_session(ctx: agents.JobContext):
     transcript = TranscriptBuffer()
 
     if TOOL_GATEWAY_BASE_URL:
-        async def publish_tool_activity(event: dict[str, str | int]) -> None:
+
+        async def publish_tool_activity(event: dict[str, object]) -> None:
             payload = json.dumps({"type": "tool_activity", **event}).encode("utf-8")
             await ctx.room.local_participant.publish_data(
                 payload,
@@ -865,7 +874,9 @@ async def auren_session(ctx: agents.JobContext):
         ctx.room.on("participant_disconnected", persist_when_user_leaves)
         ctx.add_shutdown_callback(persist_memory_then_close)
     else:
-        logging.warning("TOOL_GATEWAY_BASE_URL is not set; Auren is running without tools")
+        logging.warning(
+            "TOOL_GATEWAY_BASE_URL is not set; Auren is running without tools"
+        )
 
     instructions = INSTRUCTIONS + (TOOL_INSTRUCTIONS if tools else "")
     if context_block:
@@ -944,9 +955,7 @@ async def auren_session(ctx: agents.JobContext):
         default_location=default_location,
     )
 
-    async def publish_transcript(
-        role: str, text: str, *, final: bool = True
-    ) -> None:
+    async def publish_transcript(role: str, text: str, *, final: bool = True) -> None:
         """Reliable UI path — lk.transcription often mis-labels the speaker."""
         try:
             payload = json.dumps(
@@ -975,9 +984,7 @@ async def auren_session(ctx: agents.JobContext):
             event.is_final,
             text[:160],
         )
-        asyncio.create_task(
-            publish_transcript("user", text, final=event.is_final)
-        )
+        asyncio.create_task(publish_transcript("user", text, final=event.is_final))
 
     @session.on("conversation_item_added")
     def _on_conversation_item(event: ConversationItemAddedEvent) -> None:

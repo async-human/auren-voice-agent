@@ -7,8 +7,8 @@ keeps the GPU pod a replaceable inference runtime.
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -18,8 +18,163 @@ import httpx
 from livekit.agents import ToolError, function_tool
 
 logger = logging.getLogger("auren.tools")
-ToolEventValue = str | int
+ToolEventValue = Any
 ToolEventHandler = Callable[[dict[str, ToolEventValue]], Awaitable[None]]
+
+_PUBLIC_TEXT_LIMIT = 280
+
+_TOOL_DISPLAY_NAMES = {
+    "get_current_time": "Current time",
+    "get_weather": "Weather",
+    "create_reminder": "Create reminder",
+    "list_reminders": "Reminders",
+    "save_note": "Save note",
+    "search_notes": "Search notes",
+    "search_web": "Web search",
+    "get_page_context": "Page reader",
+    "list_calendar_events": "Calendar search",
+    "find_free_slots": "Availability search",
+    "create_calendar_event": "Create calendar event",
+    "update_calendar_event": "Update calendar event",
+    "delete_calendar_event": "Delete calendar event",
+    "search_emails": "Email search",
+    "read_email": "Read email",
+    "trash_email": "Move email to Trash",
+    "draft_email": "Create email draft",
+    "send_email": "Send email",
+    "confirm_pending_action": "Confirm approved action",
+    "reject_pending_action": "Reject pending action",
+    "list_pending_actions": "Pending actions",
+    "start_workflow": "Plan workflow",
+    "update_workflow": "Update workflow",
+    "complete_workflow": "Complete workflow",
+    "schedule_followup": "Schedule follow-up",
+    "check_tool_status": "Tool health",
+    "recall": "Recall memory",
+    "remember": "Save memory",
+    "forget": "Forget memory",
+}
+
+
+def _public_text(value: object, *, limit: int = _PUBLIC_TEXT_LIMIT) -> str:
+    """Normalize text sent to the UI and keep data-channel packets compact."""
+    cleaned = " ".join(str(value or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _decision_summary(tool: str, arguments: dict[str, Any]) -> str:
+    """Return a concise action rationale, never private model reasoning."""
+    templates = {
+        "get_current_time": "Resolving the current date and timezone before interpreting relative time.",
+        "get_weather": "Checking live weather data for the requested location.",
+        "create_reminder": "Turning the request into a durable reminder with an exact due time.",
+        "list_reminders": "Checking saved reminders before answering or taking follow-up action.",
+        "save_note": "Saving the requested information so it can be recalled later.",
+        "search_notes": "Searching saved notes for context relevant to this request.",
+        "search_web": "Searching current web sources because the answer needs live information.",
+        "get_page_context": "Reading the shared page before explaining or acting on its content.",
+        "list_calendar_events": "Checking the calendar first to resolve the exact events and times.",
+        "find_free_slots": "Comparing calendar availability to identify suitable open times.",
+        "create_calendar_event": "Preparing the exact event details before requesting permission to create it.",
+        "update_calendar_event": "Preparing a version-bound calendar change so a stale approval cannot modify the wrong event.",
+        "delete_calendar_event": "Preparing a guarded deletion for the exact event before requesting approval.",
+        "search_emails": "Searching Gmail first to resolve the exact messages that match the request.",
+        "read_email": "Opening the selected Gmail message so the response is based on its actual content.",
+        "trash_email": "Preparing to move the exact message to Trash, pending explicit approval.",
+        "draft_email": "Creating a reviewable Gmail draft before anything can be sent.",
+        "send_email": "Preparing the exact recipient, subject, and content for approval before sending.",
+        "confirm_pending_action": "Executing the exact action the user approved and verifying its result.",
+        "reject_pending_action": "Cancelling the pending action so no external change is made.",
+        "list_pending_actions": "Checking which consequential actions are currently waiting for a decision.",
+        "start_workflow": "Turning the request into an explicit, user-visible execution plan.",
+        "update_workflow": "Recording progress so the execution plan remains accurate.",
+        "complete_workflow": "Closing the workflow only after its outcome has been checked.",
+        "schedule_followup": "Creating a durable follow-up that can continue after this session.",
+        "check_tool_status": "Verifying that the requested capability is available before relying on it.",
+        "recall": "Checking durable memory for context that may prevent repeated questions.",
+        "remember": "Saving only the durable fact the user asked Auren to remember.",
+        "forget": "Locating the requested memory so it can be removed safely.",
+    }
+    return templates.get(
+        tool,
+        f"Using {_TOOL_DISPLAY_NAMES.get(tool, tool.replace('_', ' '))} to move the request forward.",
+    )
+
+
+def _input_summary(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Describe safe, useful inputs without exposing bodies, tokens, or raw IDs."""
+    if tool == "search_web":
+        return _public_text(f"Query: {arguments.get('query', '')}")
+    if tool == "get_weather":
+        return _public_text(f"Location: {arguments.get('location', '')}")
+    if tool == "list_calendar_events":
+        period = arguments.get("period") or "upcoming"
+        query = arguments.get("query")
+        return _public_text(
+            f"Window: {period}" + (f" · Match: {query}" if query else "")
+        )
+    if tool == "find_free_slots":
+        return _public_text(
+            f"Next {arguments.get('days_ahead', 7)} days · {arguments.get('duration_minutes', 30)} minutes"
+        )
+    if tool in {"create_calendar_event", "update_calendar_event"}:
+        title = arguments.get("title")
+        start_at = arguments.get("start_at")
+        attendees = arguments.get("attendees")
+        attendee_count = len(attendees) if isinstance(attendees, list) else 0
+        parts = [str(value) for value in (title, start_at) if value]
+        if attendee_count:
+            parts.append(
+                f"{attendee_count} attendee{'s' if attendee_count != 1 else ''}"
+            )
+        return _public_text(" · ".join(parts)) or None
+    if tool == "delete_calendar_event":
+        return "Exact event selected" + (
+            " · Entire recurring series" if arguments.get("delete_series") else ""
+        )
+    if tool == "search_emails":
+        return _public_text(
+            f"Query: {arguments.get('query') or 'in:inbox'} · Up to {arguments.get('max_results', 5)} results"
+        )
+    if tool == "read_email":
+        return "Exact message selected"
+    if tool == "trash_email":
+        return "Exact message selected · Recoverable Trash action"
+    if tool in {"draft_email", "send_email"}:
+        recipient = arguments.get("to") or "recipient not resolved"
+        subject = arguments.get("subject") or "No subject"
+        return _public_text(f"To: {recipient} · Subject: {subject}")
+    if tool == "start_workflow":
+        plan = arguments.get("plan")
+        count = len(plan) if isinstance(plan, list) else 0
+        return _public_text(f"{count} planned step{'s' if count != 1 else ''}")
+    if tool == "update_workflow" and isinstance(arguments.get("current_step"), int):
+        return f"Progress: {arguments['current_step']} step(s) completed"
+    if tool == "complete_workflow":
+        return "Final outcome verification"
+    if tool == "create_reminder":
+        return _public_text(arguments.get("title")) or None
+    if tool in {"search_notes", "recall", "forget"}:
+        return _public_text(f"Match: {arguments.get('query', '')}")
+    if tool == "save_note":
+        title = arguments.get("title")
+        return _public_text(f"Title: {title}") if title else "User-requested note"
+    if tool == "schedule_followup":
+        return _public_text(f"In {arguments.get('run_in_minutes', 1440)} minutes")
+    return None
+
+
+def _result_summary(tool: str, body: dict[str, Any], status: str) -> str:
+    summary = _public_text(body.get("summary") or "")
+    if status == "awaiting_approval":
+        return summary or "Prepared safely and waiting for your approval."
+    if status == "failed":
+        return summary or "The tool could not complete this step."
+    if summary:
+        return summary
+    return f"{_TOOL_DISPLAY_NAMES.get(tool, tool.replace('_', ' '))} completed successfully."
 
 
 class ToolGateway:
@@ -39,7 +194,13 @@ class ToolGateway:
             timeout=timeout,
         )
         self._on_event = on_event
-        self._pending_invocations: dict[str, tuple[str, str]] = {}
+        self._pending_invocations: dict[
+            str, tuple[str, str, dict[str, ToolEventValue]]
+        ] = {}
+        self._active_workflow_id: str | None = None
+        self._active_workflow_goal: str | None = None
+        self._active_workflow_plan: list[str] = []
+        self._active_workflow_step = 0
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -49,11 +210,19 @@ class ToolGateway:
         """Run a tool and return a sentence the model can speak."""
         invocation_id = uuid.uuid4().hex
         started_at = time.monotonic()
-        await self._notify(tool, invocation_id, "started")
+        public_context = self._public_event_context(tool, arguments)
+        await self._notify(
+            tool,
+            invocation_id,
+            "started",
+            details=public_context,
+        )
         payload = {
             "tool": tool,
             "user_id": user_id,
-            "arguments": {key: value for key, value in arguments.items() if value is not None},
+            "arguments": {
+                key: value for key, value in arguments.items() if value is not None
+            },
         }
 
         try:
@@ -69,6 +238,8 @@ class ToolGateway:
                 invocation_id,
                 "failed",
                 duration_ms=_duration_ms(started_at),
+                result_summary="Auren could not reach the tool service for this step.",
+                details=public_context,
             )
             raise ToolError("I could not reach my tools just now.") from error
 
@@ -76,35 +247,46 @@ class ToolGateway:
             detail = body.get("summary") or "That did not work."
             if tool in {"confirm_pending_action", "reject_pending_action"}:
                 resolved_action_id = arguments.get("action_id")
-                if not isinstance(resolved_action_id, str) and self._pending_invocations:
+                if (
+                    not isinstance(resolved_action_id, str)
+                    and self._pending_invocations
+                ):
                     resolved_action_id = next(reversed(self._pending_invocations))
                 if isinstance(resolved_action_id, str):
                     pending_invocation = self._pending_invocations.pop(
                         resolved_action_id, None
                     )
                     if pending_invocation:
-                        pending_tool, pending_invocation_id = pending_invocation
+                        pending_tool, pending_invocation_id, pending_context = (
+                            pending_invocation
+                        )
                         await self._notify(
                             pending_tool,
                             pending_invocation_id,
                             "failed",
+                            result_summary=_result_summary(tool, body, "failed"),
+                            details=pending_context,
                         )
             await self._notify(
                 tool,
                 invocation_id,
                 "failed",
                 duration_ms=_duration_ms(started_at),
+                result_summary=_result_summary(tool, body, "failed"),
+                details=public_context,
             )
             raise ToolError(f"{tool} failed: {detail}")
         data = body.get("data")
         is_pending = isinstance(data, dict) and data.get("pending") is True
         status = "awaiting_approval" if is_pending else "completed"
         action_id = data.get("action_id") if isinstance(data, dict) else None
+        workflow_details = self._update_workflow_context(tool, arguments, data)
+        event_context = {**public_context, **workflow_details}
         if is_pending and isinstance(action_id, str):
             if len(self._pending_invocations) >= 64:
                 oldest_action_id = next(iter(self._pending_invocations))
                 self._pending_invocations.pop(oldest_action_id, None)
-            self._pending_invocations[action_id] = (tool, invocation_id)
+            self._pending_invocations[action_id] = (tool, invocation_id, event_context)
         elif tool in {"confirm_pending_action", "reject_pending_action"}:
             resolved_action_id = arguments.get("action_id")
             if not isinstance(resolved_action_id, str) and isinstance(data, dict):
@@ -115,11 +297,21 @@ class ToolGateway:
                     None,
                 )
                 if pending_invocation:
-                    pending_tool, pending_invocation_id = pending_invocation
+                    pending_tool, pending_invocation_id, pending_context = (
+                        pending_invocation
+                    )
                     await self._notify(
                         pending_tool,
                         pending_invocation_id,
-                        "completed" if tool == "confirm_pending_action" else "cancelled",
+                        "completed"
+                        if tool == "confirm_pending_action"
+                        else "cancelled",
+                        result_summary=(
+                            _result_summary(pending_tool, body, "completed")
+                            if tool == "confirm_pending_action"
+                            else "The user rejected this action. No external change was made."
+                        ),
+                        details=pending_context,
                     )
         await self._notify(
             tool,
@@ -127,7 +319,14 @@ class ToolGateway:
             status,
             duration_ms=_duration_ms(started_at),
             action_id=action_id if isinstance(action_id, str) else None,
+            result_summary=_result_summary(tool, body, status),
+            details=event_context,
         )
+        if tool == "complete_workflow" and status == "completed":
+            self._active_workflow_id = None
+            self._active_workflow_goal = None
+            self._active_workflow_plan = []
+            self._active_workflow_step = 0
         summary = str(body.get("summary") or "Done.")
         return json.dumps(
             {"tool": tool, "ok": True, "summary": summary, "data": data or {}},
@@ -142,6 +341,8 @@ class ToolGateway:
         *,
         duration_ms: int | None = None,
         action_id: str | None = None,
+        result_summary: str | None = None,
+        details: dict[str, ToolEventValue] | None = None,
     ) -> None:
         if self._on_event is None:
             return
@@ -154,10 +355,100 @@ class ToolGateway:
             event["durationMs"] = duration_ms
         if action_id is not None:
             event["actionId"] = action_id
+        if result_summary is not None:
+            event["resultSummary"] = _public_text(result_summary)
+        if details:
+            event.update(
+                {key: value for key, value in details.items() if value is not None}
+            )
         try:
             await self._on_event(event)
         except Exception as error:  # noqa: BLE001 - UI telemetry must not break tools
             logger.warning("Could not publish tool activity for %s: %s", tool, error)
+
+    def _public_event_context(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, ToolEventValue]:
+        context: dict[str, ToolEventValue] = {
+            "displayName": _TOOL_DISPLAY_NAMES.get(
+                tool, tool.replace("_", " ").title()
+            ),
+            "decisionSummary": _decision_summary(tool, arguments),
+        }
+        input_summary = _input_summary(tool, arguments)
+        if input_summary:
+            context["inputSummary"] = input_summary
+        if self._active_workflow_id and tool != "start_workflow":
+            context["workflowId"] = self._active_workflow_id
+        if tool == "start_workflow":
+            goal = _public_text(arguments.get("goal"), limit=500)
+            plan = arguments.get("plan")
+            context["workflowGoal"] = goal
+            context["workflowPlan"] = [
+                _public_text(step, limit=240)
+                for step in (plan if isinstance(plan, list) else [])
+                if _public_text(step, limit=240)
+            ][:20]
+            context["workflowStatus"] = "planning"
+            context["workflowCurrentStep"] = 0
+        elif tool in {"update_workflow", "complete_workflow"}:
+            workflow_id = arguments.get("workflow_id")
+            if isinstance(workflow_id, str):
+                context["workflowId"] = workflow_id
+            current_step = arguments.get("current_step")
+            if isinstance(current_step, int):
+                context["workflowCurrentStep"] = current_step
+            if tool == "complete_workflow":
+                context["workflowStatus"] = "completing"
+            elif isinstance(arguments.get("status"), str):
+                context["workflowStatus"] = arguments["status"]
+        return context
+
+    def _update_workflow_context(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        data: object,
+    ) -> dict[str, ToolEventValue]:
+        details: dict[str, ToolEventValue] = {}
+        payload = data if isinstance(data, dict) else {}
+        if tool == "start_workflow":
+            workflow_id = payload.get("workflow_id")
+            if isinstance(workflow_id, str):
+                self._active_workflow_id = workflow_id
+                details["workflowId"] = workflow_id
+            self._active_workflow_goal = _public_text(
+                payload.get("goal") or arguments.get("goal"), limit=500
+            )
+            raw_plan = payload.get("plan") or arguments.get("plan") or []
+            self._active_workflow_plan = [
+                _public_text(step, limit=240)
+                for step in raw_plan
+                if isinstance(step, str) and _public_text(step, limit=240)
+            ][:20]
+            self._active_workflow_step = 0
+            details.update(
+                {
+                    "workflowGoal": self._active_workflow_goal,
+                    "workflowPlan": self._active_workflow_plan,
+                    "workflowCurrentStep": 0,
+                    "workflowStatus": "active",
+                }
+            )
+        elif tool == "update_workflow":
+            current_step = payload.get("current_step", arguments.get("current_step"))
+            if isinstance(current_step, int):
+                self._active_workflow_step = current_step
+                details["workflowCurrentStep"] = current_step
+            status = payload.get("status") or arguments.get("status") or "active"
+            details["workflowStatus"] = _public_text(status, limit=32)
+        elif tool == "complete_workflow":
+            status = payload.get("status") or arguments.get("status") or "completed"
+            details["workflowStatus"] = _public_text(status, limit=32)
+            details["workflowCurrentStep"] = len(self._active_workflow_plan)
+        return details
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -182,7 +473,9 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         return await gateway.invoke("get_current_time", user_id, {"timezone": timezone})
 
     @function_tool
-    async def get_weather(location: str, units: Literal["metric", "imperial"] = "metric") -> str:
+    async def get_weather(
+        location: str, units: Literal["metric", "imperial"] = "metric"
+    ) -> str:
         """Get the current weather and today's forecast for a place.
 
         Args:
@@ -377,9 +670,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
     @function_tool
     async def read_email(message_id: str) -> str:
         """Read one complete Gmail message returned by search_emails."""
-        return await gateway.invoke(
-            "read_email", user_id, {"message_id": message_id}
-        )
+        return await gateway.invoke("read_email", user_id, {"message_id": message_id})
 
     @function_tool
     async def trash_email(message_id: str) -> str:
@@ -428,9 +719,7 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
     @function_tool
     async def list_pending_actions(limit: int = 5) -> str:
         """List actions waiting for confirmation."""
-        return await gateway.invoke(
-            "list_pending_actions", user_id, {"limit": limit}
-        )
+        return await gateway.invoke("list_pending_actions", user_id, {"limit": limit})
 
     @function_tool
     async def start_workflow(goal: str, plan: list[str] | None = None) -> str:
@@ -446,7 +735,11 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         current_step: int | None = None,
         note: str | None = None,
     ) -> str:
-        """Update workflow progress."""
+        """Update the user-visible workflow after meaningful progress.
+
+        current_step is the number of completed plan steps. Use 1 after the
+        first step completes, 2 after the second, and so on.
+        """
         return await gateway.invoke(
             "update_workflow",
             user_id,
@@ -494,7 +787,9 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
             body: The content to remember.
             title: Optional short title.
         """
-        return await gateway.invoke("save_note", user_id, {"body": body, "title": title})
+        return await gateway.invoke(
+            "save_note", user_id, {"body": body, "title": title}
+        )
 
     @function_tool
     async def search_notes(query: str, limit: int = 5) -> str:
@@ -504,7 +799,9 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
             query: Words to look for.
             limit: Maximum number of notes to return.
         """
-        return await gateway.invoke("search_notes", user_id, {"query": query, "limit": limit})
+        return await gateway.invoke(
+            "search_notes", user_id, {"query": query, "limit": limit}
+        )
 
     @function_tool
     async def search_web(query: str, max_results: int = 3) -> str:
