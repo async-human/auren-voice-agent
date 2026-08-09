@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 import uuid
 import wave
 
+from http_headers import build_http_headers
 from stt_settings import STTConfig
 
 
@@ -56,7 +57,10 @@ def synthesize() -> tuple[bytes, float]:
     request = Request(
         f"{base_url}/audio/speech",
         data=payload,
-        headers={"Content-Type": "application/json", "Accept": "audio/wav"},
+        headers=build_http_headers(
+            accept="audio/wav",
+            content_type="application/json",
+        ),
         method="POST",
     )
     started = time.monotonic()
@@ -143,9 +147,10 @@ def _multipart(audio: bytes) -> tuple[bytes, str]:
 
 def transcribe(audio: bytes) -> tuple[str, float]:
     body, boundary = _multipart(audio)
-    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    if STT_CONFIG.api_key and STT_CONFIG.api_key != "local":
-        headers["Authorization"] = f"Bearer {STT_CONFIG.api_key}"
+    headers = build_http_headers(
+        api_key=STT_CONFIG.api_key,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
     request = Request(
         f"{STT_CONFIG.base_url}/audio/transcriptions",
         data=body,

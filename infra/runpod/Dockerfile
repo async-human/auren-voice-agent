@@ -111,6 +111,7 @@ COPY --chown=auren:auren \
     services/voice-worker/screen_reader.py \
     services/voice-worker/stt_provider.py \
     services/voice-worker/stt_settings.py \
+    services/voice-worker/http_headers.py \
     ./
 
 COPY infra/runpod/supervisord.conf /etc/supervisor/conf.d/auren.conf
