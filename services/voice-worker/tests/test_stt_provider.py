@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+from livekit.agents import stt
+from livekit.plugins import openai
 
 from stt_provider import (
     NemotronSTT,
+    QwenSTT,
     STTConfig,
     available_stt_providers,
     build_stt,
+    parse_qwen_transcript,
 )
 
 
@@ -200,6 +205,89 @@ class STTProviderTests(unittest.TestCase):
         self.assertTrue(client.capabilities.streaming)
         self.assertTrue(client.capabilities.interim_results)
         self.assertEqual(str(client._client.base_url), "http://127.0.0.1:8080/v1/")
+
+    def test_factory_uses_qwen_transcript_adapter(self) -> None:
+        config = self.config(
+            STT_PROVIDER="qwen",
+            STT_BASE_URL="http://127.0.0.1:8011/v1",
+        )
+
+        with patch.dict(
+            os.environ,
+            {name: "" for name in STT_ENV_NAMES if "PROXY" in name.upper()},
+        ):
+            client = build_stt(config)
+
+        self.assertIsInstance(client, QwenSTT)
+
+
+class QwenTranscriptTests(unittest.IsolatedAsyncioTestCase):
+    def test_parser_extracts_detected_language_and_spoken_text(self) -> None:
+        text, language = parse_qwen_transcript(
+            "language English<asr_text>Hey Auren, switch back to English."
+        )
+
+        self.assertEqual(text, "Hey Auren, switch back to English.")
+        self.assertEqual(language, "English")
+
+    def test_parser_handles_hindi_and_surrounding_whitespace(self) -> None:
+        text, language = parse_qwen_transcript(
+            "  language Hindi <asr_text>  ये कौन सा लैंग्वेज है मेरा?  "
+        )
+
+        self.assertEqual(text, "ये कौन सा लैंग्वेज है मेरा?")
+        self.assertEqual(language, "Hindi")
+
+    def test_parser_does_not_rewrite_plain_transcripts(self) -> None:
+        text, language = parse_qwen_transcript(
+            "Language English is what I want to discuss."
+        )
+
+        self.assertEqual(text, "Language English is what I want to discuss.")
+        self.assertIsNone(language)
+
+    async def test_qwen_client_normalizes_event_before_livekit_receives_it(self) -> None:
+        raw_event = stt.SpeechEvent(
+            type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+            alternatives=[
+                stt.SpeechData(
+                    text="language English<asr_text>Hello from Qwen.",
+                    language="",
+                )
+            ],
+        )
+        proxy_overrides = {
+            name: ""
+            for name in (
+                "ALL_PROXY",
+                "all_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+            )
+        }
+        with patch.dict(os.environ, proxy_overrides):
+            client = QwenSTT(
+                model="Qwen/Qwen3-ASR-1.7B",
+                base_url="http://127.0.0.1:8011/v1",
+                api_key="test-key",
+                language="",
+                detect_language=True,
+                use_realtime=False,
+            )
+
+        with patch.object(
+            openai.STT,
+            "_recognize_impl",
+            new=AsyncMock(return_value=raw_event),
+        ):
+            event = await client._recognize_impl([])
+
+        alternative = event.alternatives[0]
+        self.assertEqual(alternative.text, "Hello from Qwen.")
+        self.assertEqual(alternative.metadata["detected_language"], "English")
+        self.assertEqual(alternative.metadata["provider"], "qwen")
 
 
 class FakeWebSocket:
