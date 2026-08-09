@@ -46,6 +46,22 @@ async def test_unknown_tool_is_rejected(client: AsyncClient) -> None:
     assert "Unknown tool" in body["error"]
 
 
+async def test_google_tool_explains_when_account_is_not_connected(client: AsyncClient) -> None:
+    response = await client.post(
+        "/v1/tools/invoke",
+        json={
+            "tool": "search_emails",
+            "user_id": "not-connected-user",
+            "arguments": {"query": "in:inbox", "max_results": 1},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "Google is not connected" in body["summary"]
+
+
 async def test_invalid_arguments_are_explained(client: AsyncClient) -> None:
     body = await invoke(client, "save_note")
 

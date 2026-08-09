@@ -15,10 +15,6 @@ from app.services import google_oauth
 
 router = APIRouter(prefix="/v1/connections", tags=["connections"])
 
-# Short-lived CSRF state: state -> user_id (dev-simple; replace with Redis in prod scale).
-_PENDING_STATES: dict[str, str] = {}
-
-
 @router.get("")
 async def list_connections(
     user: User = Depends(require_user),
@@ -29,6 +25,7 @@ async def list_connections(
         "google": {
             "connected": connection is not None,
             "account_email": connection.account_email if connection else None,
+            "timezone": connection.timezone_name if connection else None,
             "scopes": connection.scopes if connection else None,
         }
     }
@@ -38,6 +35,7 @@ async def list_connections(
 async def google_start(
     user: User = Depends(require_user),
     settings: Settings = Depends(get_settings),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not google_oauth.google_configured(settings):
         raise HTTPException(
@@ -45,21 +43,25 @@ async def google_start(
             detail="Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the API.",
         )
     state = secrets.token_urlsafe(24)
-    _PENDING_STATES[state] = user.id
+    await google_oauth.store_oauth_state(session, state=state, user_id=user.id)
     return {"authorize_url": google_oauth.authorize_url(settings, state=state)}
 
 
 @router.get("/google/callback")
 async def google_callback(
-    code: str = Query(...),
+    code: str | None = Query(default=None),
     state: str = Query(...),
+    error: str | None = Query(default=None),
     settings: Settings = Depends(get_settings),
     http: httpx.AsyncClient = Depends(get_http_client),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    user_id = _PENDING_STATES.pop(state, None)
+    user_id = await google_oauth.consume_oauth_state(session, state=state)
     if not user_id:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    if error or not code:
+        target = f"{settings.public_app_url.rstrip('/')}/talk?google=cancelled"
+        return RedirectResponse(url=target)
     token_payload = await google_oauth.exchange_code(settings, http, code=code)
     await google_oauth.upsert_connection(
         session, settings, http, user_id=user_id, token_payload=token_payload
@@ -71,7 +73,11 @@ async def google_callback(
 @router.delete("/google")
 async def google_disconnect(
     user: User = Depends(require_user),
+    settings: Settings = Depends(get_settings),
+    http: httpx.AsyncClient = Depends(get_http_client),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    removed = await google_oauth.delete_connection(session, user.id)
-    return {"disconnected": removed}
+    removed, revoked = await google_oauth.revoke_connection(
+        session, settings, http, user_id=user.id
+    )
+    return {"disconnected": removed, "revoked": revoked}

@@ -128,6 +128,7 @@ async def test_tool_listing_exposes_expected_tools(client: AsyncClient) -> None:
         "find_free_slots",
         "create_calendar_event",
         "search_emails",
+        "read_email",
         "draft_email",
         "send_email",
         "list_pending_actions",

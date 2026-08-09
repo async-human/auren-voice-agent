@@ -62,6 +62,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = create_session_factory(engine)
     if settings.is_production:
         logger.info("Alembic owns the production schema; skipping create_all")
+        if (
+            settings.google_client_id
+            and settings.google_client_secret
+            and not settings.token_encryption_key
+        ):
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY must be set separately when Google OAuth is enabled "
+                "in production"
+            )
     else:
         await create_schema(engine)
 

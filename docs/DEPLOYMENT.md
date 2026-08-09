@@ -124,6 +124,12 @@ these paths:
   TOOL_GATEWAY_TOKEN
   DEFAULT_TIMEZONE
   WEB_SEARCH_PROVIDER          # plus the matching provider API key
+  GOOGLE_CLIENT_ID
+  GOOGLE_CLIENT_SECRET
+  GOOGLE_REDIRECT_URI          # exact public API /v1/connections/google/callback URL
+  PUBLIC_APP_URL
+  TOKEN_ENCRYPTION_KEY         # independent high-entropy key; required with Google in prod
+  DEFAULT_TIMEZONE             # e.g. Asia/Kolkata
 
 /voice-worker
   AUREN_ENV

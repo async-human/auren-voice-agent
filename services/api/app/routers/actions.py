@@ -10,6 +10,8 @@ from app.dependencies import get_http_client, get_session, get_settings
 from app.models.tables import User
 from app.security.auth import require_user
 from app.services import action_execution, approvals
+from app.services.action_payloads import reveal_arguments
+from app.tools import registry
 from app.tools.base import ToolContext, ToolError
 
 router = APIRouter(prefix="/v1/actions", tags=["actions"])
@@ -18,6 +20,7 @@ router = APIRouter(prefix="/v1/actions", tags=["actions"])
 @router.get("/pending")
 async def pending_actions(
     user: User = Depends(require_user),
+    settings: Settings = Depends(get_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     rows = await approvals.list_pending(session, user.id)
@@ -26,8 +29,10 @@ async def pending_actions(
             {
                 "id": row.id,
                 "tool": row.tool,
-                "preview": row.preview,
-                "arguments": row.arguments,
+                "preview": registry.build_preview(
+                    row.tool,
+                    reveal_arguments(settings, row.tool, row.arguments),
+                ),
                 "expires_at": row.expires_at.isoformat() if row.expires_at else None,
             }
             for row in rows
