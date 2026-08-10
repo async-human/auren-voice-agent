@@ -66,7 +66,7 @@ class Settings(BaseSettings):
 
     # STT choices exposed to signed-in users. The API puts the validated choice
     # into signed LiveKit metadata; the worker owns endpoint credentials.
-    stt_default_provider: Literal["whisper", "qwen", "nemotron"] = "whisper"
+    stt_default_provider: Literal["whisper", "qwen"] = "whisper"
     stt_available_providers: str = "whisper"
 
     # Generated user artifacts. Mount this directory on persistent storage in
@@ -130,7 +130,7 @@ class Settings(BaseSettings):
 
     @property
     def stt_provider_list(self) -> list[str]:
-        supported = {"whisper", "qwen", "nemotron"}
+        supported = {"whisper", "qwen"}
         providers: list[str] = []
         for value in self.stt_available_providers.split(","):
             provider = value.strip().lower()

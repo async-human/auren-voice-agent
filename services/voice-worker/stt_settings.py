@@ -5,7 +5,7 @@ import os
 from urllib.parse import urlsplit, urlunsplit
 
 
-SUPPORTED_STT_PROVIDERS = ("whisper", "qwen", "nemotron")
+SUPPORTED_STT_PROVIDERS = ("whisper", "qwen")
 
 _PROVIDER_ALIASES = {
     "faster-whisper": "whisper",
@@ -13,15 +13,11 @@ _PROVIDER_ALIASES = {
     "qwen3": "qwen",
     "qwen3-asr": "qwen",
     "qwen3_asr": "qwen",
-    "nemotron-3.5": "nemotron",
-    "nemotron3.5": "nemotron",
-    "nemotron-3.5-asr": "nemotron",
 }
 
 _DEFAULT_MODELS = {
     "whisper": "Systran/faster-whisper-medium.en",
     "qwen": "Qwen/Qwen3-ASR-1.7B",
-    "nemotron": "nvidia/nemotron-3.5-asr-streaming-0.6b",
 }
 
 
@@ -123,7 +119,6 @@ class STTConfig:
         legacy_prefix = {
             "whisper": "FASTER_WHISPER",
             "qwen": "QWEN_ASR",
-            "nemotron": "NEMOTRON_ASR",
         }[provider]
 
         base_url = _provider_value(
@@ -157,25 +152,22 @@ class STTConfig:
             language = configured_language.strip()
         elif provider == "whisper":
             language = "en"
-        elif provider == "nemotron":
-            language = "auto"
         else:
             language = ""
 
         # Qwen and Whisper use an empty language field for auto detection.
-        # Nemotron's prompt-conditioned runtime expects the literal value "auto".
-        detect_language = provider != "nemotron" and language.lower() in {"", "auto"}
+        detect_language = language.lower() in {"", "auto"}
         if detect_language:
             language = ""
 
         realtime_name = (
             "STT_USE_REALTIME" if use_generic else f"{legacy_prefix}_USE_REALTIME"
         )
-        use_realtime = _boolean(realtime_name, provider == "nemotron")
-        if use_realtime and provider != "nemotron":
+        use_realtime = _boolean(realtime_name, False)
+        if use_realtime:
             raise RuntimeError(
-                "STT_USE_REALTIME is currently supported only for Nemotron via "
-                "NeMo-Speech.cpp's OpenAI-compatible /v1/realtime endpoint"
+                "STT_USE_REALTIME is not supported by Auren's Whisper or Qwen "
+                "clients; use utterance transcription with LiveKit endpointing"
             )
 
         api_key = _provider_value(

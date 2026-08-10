@@ -83,3 +83,22 @@ jobs:
       - name: Run voice worker unit tests
         working-directory: services/voice-worker
         run: uv run python -m unittest discover -s tests -v
+
+  qwen-asr-runtime:
+    name: Qwen ASR runtime configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Verify locked dependencies
+        working-directory: infra/qwen-asr
+        run: uv lock --check
+      - name: Validate runtime entrypoint
+        run: bash -n infra/qwen-asr/entrypoint.sh
