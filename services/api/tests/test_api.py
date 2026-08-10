@@ -58,9 +58,8 @@ async def test_voice_stt_options_are_authenticated_and_config_driven(
     assert [provider["id"] for provider in body["providers"]] == [
         "whisper",
         "qwen",
-        "nemotron",
     ]
-    assert body["providers"][2]["realtime"] is True
+    assert all(provider["realtime"] is False for provider in body["providers"])
 
 
 async def test_voice_token_carries_selected_stt_provider(

@@ -12,7 +12,7 @@ const ConnectionsPanel = dynamic(() => import("./connections-panel"), { ssr: fal
 const ArtifactsPanel = dynamic(() => import("./artifacts-panel"), { ssr: false });
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
-type SttProvider = "whisper" | "qwen" | "nemotron";
+type SttProvider = "whisper" | "qwen";
 
 type SttOption = {
   id: SttProvider;
@@ -424,7 +424,7 @@ export default function VoiceAgent() {
         };
         const available = Array.isArray(body.providers)
           ? body.providers.filter((option) =>
-              ["whisper", "qwen", "nemotron"].includes(option.id),
+              ["whisper", "qwen"].includes(option.id),
             )
           : [];
         if (available.length === 0) return;

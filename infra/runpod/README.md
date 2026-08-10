@@ -4,7 +4,7 @@ This directory replaces every interactive RunPod installation command with one
 immutable GPU image. The image runs four supervised service boundaries:
 
 - the selected STT runtime (bundled Speaches/faster-whisper by default, or an
-  authenticated Qwen3-ASR/Nemotron companion endpoint)
+  authenticated Qwen3-ASR companion endpoint)
 - Ollama/Qwen on `127.0.0.1:11434`
 - Chatterbox Turbo on `127.0.0.1:8004`
 - LiveKit voice worker
@@ -97,8 +97,9 @@ microphone test through LiveKit to verify capture permissions, room routing,
 turn handling, and speaker playback end to end.
 
 Provider-specific deployment and rollback settings are documented in
-[`docs/STT_PROVIDERS.md`](../../docs/STT_PROVIDERS.md). Only one ASR runtime
-should be active per worker deployment.
+[`docs/STT_PROVIDERS.md`](../../docs/STT_PROVIDERS.md). The main worker keeps
+Whisper available locally and can use the separately managed Qwen companion for
+per-session provider selection.
 
 ## Idle shutdown
 

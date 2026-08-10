@@ -8,7 +8,6 @@ from livekit.agents import stt
 from livekit.plugins import openai
 
 from stt_provider import (
-    NemotronSTT,
     QwenSTT,
     STTConfig,
     available_stt_providers,
@@ -38,12 +37,6 @@ STT_ENV_NAMES = {
     "QWEN_ASR_USE_REALTIME",
     "QWEN_ASR_API_KEY",
     "QWEN_ASR_HEALTH_URL",
-    "NEMOTRON_ASR_BASE_URL",
-    "NEMOTRON_ASR_MODEL",
-    "NEMOTRON_ASR_LANGUAGE",
-    "NEMOTRON_ASR_USE_REALTIME",
-    "NEMOTRON_ASR_API_KEY",
-    "NEMOTRON_ASR_HEALTH_URL",
     "ALL_PROXY",
     "all_proxy",
     "HTTP_PROXY",
@@ -92,21 +85,6 @@ class STTProviderTests(unittest.TestCase):
         self.assertFalse(config.use_realtime)
         self.assertEqual(config.health_url, "http://qwen-asr.internal:8000/health")
 
-    def test_nemotron_enables_native_realtime_by_default(self) -> None:
-        config = self.config(
-            STT_PROVIDER="nemotron-3.5",
-            NEMOTRON_ASR_BASE_URL="http://nemotron.internal:8080/v1/",
-        )
-
-        self.assertEqual(config.provider, "nemotron")
-        self.assertEqual(
-            config.model,
-            "nvidia/nemotron-3.5-asr-streaming-0.6b",
-        )
-        self.assertEqual(config.language, "auto")
-        self.assertFalse(config.detect_language)
-        self.assertTrue(config.use_realtime)
-
     def test_explicit_language_disables_qwen_auto_detection(self) -> None:
         config = self.config(
             STT_PROVIDER="qwen",
@@ -119,8 +97,8 @@ class STTProviderTests(unittest.TestCase):
         self.assertFalse(config.detect_language)
         self.assertEqual(config.api_key, "secret")
 
-    def test_non_nemotron_realtime_configuration_is_rejected(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "supported only for Nemotron"):
+    def test_realtime_configuration_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "is not supported"):
             self.config(
                 STT_PROVIDER="qwen",
                 STT_BASE_URL="http://127.0.0.1:8001/v1",
@@ -135,7 +113,7 @@ class STTProviderTests(unittest.TestCase):
         config = self.selected_config(
             "qwen",
             STT_PROVIDER="whisper",
-            STT_AVAILABLE_PROVIDERS="whisper,qwen,nemotron",
+            STT_AVAILABLE_PROVIDERS="whisper,qwen",
             STT_BASE_URL="http://127.0.0.1:8000/v1",
             QWEN_ASR_BASE_URL="http://qwen.internal:8001/v1",
             QWEN_ASR_LANGUAGE="hi",
@@ -146,19 +124,6 @@ class STTProviderTests(unittest.TestCase):
         self.assertEqual(config.base_url, "http://qwen.internal:8001/v1")
         self.assertEqual(config.language, "hi")
         self.assertEqual(config.api_key, "qwen-secret")
-
-    def test_session_selection_keeps_nemotron_realtime(self) -> None:
-        config = self.selected_config(
-            "nemotron",
-            STT_PROVIDER="whisper",
-            STT_AVAILABLE_PROVIDERS="whisper,nemotron",
-            STT_BASE_URL="http://127.0.0.1:8000/v1",
-            NEMOTRON_ASR_BASE_URL="http://nemotron.internal:8080/v1",
-            NEMOTRON_ASR_USE_REALTIME="true",
-        )
-
-        self.assertEqual(config.provider, "nemotron")
-        self.assertTrue(config.use_realtime)
 
     def test_disabled_session_provider_is_rejected(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "not enabled"):
@@ -174,37 +139,11 @@ class STTProviderTests(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items() if key not in STT_ENV_NAMES}
         environment.update(
             STT_PROVIDER="whisper",
-            STT_AVAILABLE_PROVIDERS="qwen,nemotron",
+            STT_AVAILABLE_PROVIDERS="qwen",
         )
         with patch.dict(os.environ, environment, clear=True):
             with self.assertRaisesRegex(RuntimeError, "must be included"):
                 available_stt_providers()
-
-    def test_factory_preserves_provider_capabilities(self) -> None:
-        config = self.config(
-            STT_PROVIDER="nemotron",
-            STT_BASE_URL="http://127.0.0.1:8080/v1",
-            STT_LANGUAGE="en-US",
-        )
-
-        proxy_overrides = {
-            name: ""
-            for name in (
-                "ALL_PROXY",
-                "all_proxy",
-                "HTTP_PROXY",
-                "http_proxy",
-                "HTTPS_PROXY",
-                "https_proxy",
-            )
-        }
-        with patch.dict(os.environ, proxy_overrides):
-            client = build_stt(config)
-
-        self.assertIsInstance(client, NemotronSTT)
-        self.assertTrue(client.capabilities.streaming)
-        self.assertTrue(client.capabilities.interim_results)
-        self.assertEqual(str(client._client.base_url), "http://127.0.0.1:8080/v1/")
 
     def test_factory_uses_qwen_transcript_adapter(self) -> None:
         config = self.config(
@@ -288,82 +227,6 @@ class QwenTranscriptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(alternative.text, "Hello from Qwen.")
         self.assertEqual(alternative.metadata["detected_language"], "English")
         self.assertEqual(alternative.metadata["provider"], "qwen")
-
-
-class FakeWebSocket:
-    def __init__(self) -> None:
-        self.messages: list[dict[str, object]] = []
-
-    async def send_json(self, payload: dict[str, object]) -> None:
-        self.messages.append(payload)
-
-
-class FakeSession:
-    def __init__(self, websocket: FakeWebSocket) -> None:
-        self.websocket = websocket
-        self.url = ""
-        self.headers: dict[str, str] = {}
-
-    async def ws_connect(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str],
-    ) -> FakeWebSocket:
-        self.url = url
-        self.headers = headers
-        return self.websocket
-
-
-class NemotronRealtimeProtocolTests(unittest.IsolatedAsyncioTestCase):
-    async def test_uses_nemo_speech_flat_session_update_schema(self) -> None:
-        config = STTConfig(
-            provider="nemotron",
-            model="nvidia/nemotron-3.5-asr-streaming-0.6b",
-            base_url="http://127.0.0.1:8080/v1",
-            api_key="test-key",
-            language="en-US",
-            detect_language=False,
-            use_realtime=True,
-            health_url="http://127.0.0.1:8080/health",
-        )
-        proxy_overrides = {
-            name: ""
-            for name in (
-                "ALL_PROXY",
-                "all_proxy",
-                "HTTP_PROXY",
-                "http_proxy",
-                "HTTPS_PROXY",
-                "https_proxy",
-            )
-        }
-        with patch.dict(os.environ, proxy_overrides):
-            client = build_stt(config)
-
-        websocket = FakeWebSocket()
-        session = FakeSession(websocket)
-        with patch.object(client, "_ensure_session", return_value=session):
-            connected = await client._connect_ws(1.0)
-
-        self.assertIs(connected, websocket)
-        self.assertIn("/v1/realtime?model=", session.url)
-        self.assertEqual(session.headers["Authorization"], "Bearer test-key")
-        self.assertEqual(
-            websocket.messages,
-            [
-                {
-                    "type": "session.update",
-                    "session": {
-                        "sample_rate": 24000,
-                        "language": "en-US",
-                        "automatic_punctuation": True,
-                        "endpointing_ms": 350,
-                    },
-                }
-            ],
-        )
-        await client.aclose()
 
 
 if __name__ == "__main__":

@@ -16,8 +16,8 @@ to `127.0.0.1`; companion services use authenticated private networking and are
 consumed only by the voice worker. A LiveKit agent makes an outbound WebSocket
 connection, so the worker requires no public inbound port.
 
-Whisper, Qwen3-ASR, and Nemotron 3.5 are supported through a validated provider
-configuration. Whisper remains the default; see
+Whisper and Qwen3-ASR are supported through a validated provider configuration.
+Whisper remains the default; see
 [`docs/STT_PROVIDERS.md`](docs/STT_PROVIDERS.md) for deployment profiles,
 resource isolation, and the evaluation gate.
 

@@ -18,22 +18,22 @@ class HealthResponse(BaseModel):
 class VoiceTokenResponse(BaseModel):
     serverUrl: str
     participantToken: str
-    sttProvider: Literal["whisper", "qwen", "nemotron"]
+    sttProvider: Literal["whisper", "qwen"]
 
 
 class VoiceTokenRequest(BaseModel):
-    stt_provider: Literal["whisper", "qwen", "nemotron"] | None = None
+    stt_provider: Literal["whisper", "qwen"] | None = None
 
 
 class VoiceSTTOption(BaseModel):
-    id: Literal["whisper", "qwen", "nemotron"]
+    id: Literal["whisper", "qwen"]
     label: str
     description: str
     realtime: bool
 
 
 class VoiceSTTOptionsResponse(BaseModel):
-    default_provider: Literal["whisper", "qwen", "nemotron"]
+    default_provider: Literal["whisper", "qwen"]
     providers: list[VoiceSTTOption]
 
 

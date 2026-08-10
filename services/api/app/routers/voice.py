@@ -22,7 +22,6 @@ router = APIRouter(prefix="/v1/voice", tags=["voice"])
 STT_OPTION_DETAILS = {
     "whisper": ("Whisper", "Mature and dependable multilingual transcription.", False),
     "qwen": ("Qwen3-ASR", "Accuracy-focused multilingual transcription.", False),
-    "nemotron": ("Nemotron", "Low-latency native streaming transcription.", True),
 }
 
 

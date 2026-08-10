@@ -13,7 +13,7 @@ case "${provider,,}" in
       speaches.main:create_app \
       --log-level info
     ;;
-  qwen|qwen3|qwen3-asr|qwen3_asr|nemotron|nemotron-3.5|nemotron3.5|nemotron-3.5-asr)
+  qwen|qwen3|qwen3-asr|qwen3_asr)
     echo "STT_PROVIDER=${provider}; using the configured external/companion STT endpoint"
     exec tail --follow /dev/null
     ;;

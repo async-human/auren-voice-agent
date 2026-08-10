@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 from httpx import AsyncClient
 from pytest import MonkeyPatch
@@ -13,6 +14,9 @@ from app.tools.base import ToolResult
 async def test_consequential_tool_requires_confirmation(client: AsyncClient) -> None:
     # Without Google connected, create_calendar_event should still enter the
     # confirmation gate before attempting Google APIs.
+    future_start = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+        microsecond=0
+    )
     response = await client.post(
         "/v1/tools/invoke",
         json={
@@ -20,7 +24,7 @@ async def test_consequential_tool_requires_confirmation(client: AsyncClient) -> 
             "user_id": "approval-user",
             "arguments": {
                 "title": "Sync with Rahul",
-                "start_at": "2026-08-10T18:00:00+05:30",
+                "start_at": future_start.isoformat(),
                 "duration_minutes": 30,
                 "attendees": ["rahul@example.com"],
             },

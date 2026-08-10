@@ -1,207 +1,117 @@
-# Pluggable speech-to-text providers
+# Speech-to-text providers
 
-Auren uses one OpenAI-compatible speech-to-text contract while allowing the
-inference runtime to change independently. A signed-in user can choose a
-provider before each call; that validated choice is carried in signed LiveKit
-metadata and the worker creates the matching STT client for that session.
+Auren supports two speech-to-text providers behind one OpenAI-compatible
+contract. A signed-in user chooses a provider before a call; the API validates
+the choice, signs it into LiveKit metadata, and the worker creates the matching
+client for that session.
 
-| `STT_PROVIDER` | Runtime | Mode used by Auren | Default model |
+| Provider | Runtime | Auren mode | Default model |
 | --- | --- | --- | --- |
 | `whisper` | Speaches / faster-whisper | utterance REST | `Systran/faster-whisper-medium.en` |
-| `qwen` | Qwen3-ASR on vLLM | utterance REST | `Qwen/Qwen3-ASR-1.7B` |
-| `nemotron` | NVIDIA NeMo-Speech.cpp | native realtime WebSocket | `nvidia/nemotron-3.5-asr-streaming-0.6b` |
+| `qwen` | Qwen3-ASR / vLLM | utterance REST | `Qwen/Qwen3-ASR-1.7B` |
 
-Whisper remains the production default. Qwen and Nemotron are opt-in until an
-Auren-specific evaluation shows a worthwhile accuracy or latency improvement.
-Auren does not load model weights inside the worker: every enabled provider
-must have a reachable inference runtime.
+Whisper remains the safe default. Qwen is opt-in until an Auren-specific
+evaluation demonstrates sufficient accuracy, latency, and reliability.
 
-## Common configuration
+## Shared configuration
+
+The voice worker owns model endpoint credentials:
 
 ```dotenv
 STT_PROVIDER=whisper
-STT_AVAILABLE_PROVIDERS=whisper
+STT_AVAILABLE_PROVIDERS=whisper,qwen
+
 STT_BASE_URL=http://127.0.0.1:8000/v1
 STT_MODEL=Systran/faster-whisper-medium.en
 STT_LANGUAGE=en
 STT_USE_REALTIME=false
 STT_API_KEY=local
-```
 
-`STT_PROVIDER` is the worker default and uses the generic `STT_*` endpoint
-settings. `STT_AVAILABLE_PROVIDERS` is the allowlist for signed session choices.
-For safe rollout, it defaults to only the default provider.
-
-The API independently controls what the browser can see:
-
-```dotenv
-STT_DEFAULT_PROVIDER=whisper
-STT_AVAILABLE_PROVIDERS=whisper
-```
-
-Keep the API and worker allowlists identical. Never advertise a provider until
-its private endpoint is configured and tested on the worker.
-
-`STT_BASE_URL` is normalized to end in `/v1`. `STT_HEALTH_URL` is optional and
-defaults to the same service's `/health` route. Use it when a gateway exposes
-health at a different path.
-
-`FASTER_WHISPER_BASE_URL` and `FASTER_WHISPER_MODEL` remain supported as
-backward-compatible Whisper aliases, but new deployments should use the
-provider-neutral variables.
-
-Never expose an unprotected model port to the public internet. Use a private
-network and set `STT_API_KEY` when the runtime is not loopback-only.
-
-## Whisper profile
-
-The immutable RunPod image bundles Speaches and starts it automatically for the
-default profile:
-
-```dotenv
-STT_PROVIDER=whisper
-STT_BASE_URL=http://127.0.0.1:8000/v1
-STT_MODEL=Systran/faster-whisper-medium.en
-STT_LANGUAGE=en
-STT_USE_REALTIME=false
-STT_API_KEY=local
-```
-
-Use `Systran/faster-whisper-large-v3` only after checking the shared GPU's VRAM
-budget and end-to-end latency.
-
-## Qwen3-ASR profile
-
-Qwen3-ASR should run in its own isolated vLLM runtime. The
-[official Qwen3-ASR project](https://github.com/QwenLM/Qwen3-ASR) documents that
-the vLLM server
-implements OpenAI's `/v1/audio/transcriptions` endpoint, so no Auren-specific
-adapter is required.
-
-Start the model service in a dedicated environment or companion deployment:
-
-```bash
-vllm serve Qwen/Qwen3-ASR-1.7B \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --api-key replace-with-a-secret
-```
-
-For a Qwen-only worker, point the generic settings at the private endpoint:
-
-```dotenv
-STT_PROVIDER=qwen
-STT_BASE_URL=http://qwen-asr.internal:8000/v1
-STT_MODEL=Qwen/Qwen3-ASR-1.7B
-# Leave empty for language detection; set hi or en for a forced language.
-STT_LANGUAGE=
-STT_USE_REALTIME=false
-STT_API_KEY=replace-with-a-secret
-```
-
-For per-session selection while Whisper remains the default, use the
-provider-specific settings instead:
-
-```dotenv
-QWEN_ASR_BASE_URL=http://qwen-asr.internal:8000/v1
+QWEN_ASR_BASE_URL=https://your-qwen-endpoint/v1
 QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B
 QWEN_ASR_LANGUAGE=
 QWEN_ASR_USE_REALTIME=false
 QWEN_ASR_API_KEY=replace-with-a-secret
 ```
 
-Qwen's streaming inference API is not the same wire protocol as OpenAI's
-Realtime transcription API. Auren therefore uses the supported transcription
-REST endpoint and LiveKit's VAD/turn detector for endpointing. The worker fails
-fast if `STT_USE_REALTIME=true` is set for Qwen.
-
-## Nemotron 3.5 profile
-
-NVIDIA's [Nemotron 3.5 model card](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
-recommends [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) as a
-lightweight local runtime. It provides both the OpenAI-compatible transcription endpoint and
-the realtime event protocol consumed by Auren's LiveKit STT adapter.
-
-Download the official quantized model and run the server:
-
-```bash
-hf download nvidia/nemotron-3.5-asr-streaming-0.6b \
-  nemotron-3.5-asr-streaming-0.6b.q8_0.gguf \
-  --local-dir /workspace/models/stt
-
-export NEMO_SPEECH_HTTP_API_KEY=replace-with-a-secret
-nemo-speech serve \
-  --config /path/to/auren-voice-agent/infra/stt/nemotron.config.yaml
-```
-
-Configure Auren:
+The API controls which choices the browser can see:
 
 ```dotenv
-STT_PROVIDER=nemotron
-STT_BASE_URL=http://nemotron-asr.internal:8080/v1
-STT_MODEL=nvidia/nemotron-3.5-asr-streaming-0.6b
-STT_LANGUAGE=auto
-STT_USE_REALTIME=true
-STT_API_KEY=replace-with-a-secret
+STT_DEFAULT_PROVIDER=whisper
+STT_AVAILABLE_PROVIDERS=whisper,qwen
 ```
 
-For per-session selection while Whisper remains the default, configure:
+Keep the API and worker allowlists identical. Never advertise Qwen until its
+endpoint is healthy and reachable from the worker. `STT_BASE_URL` values are
+normalized to end in `/v1`; the corresponding health URL defaults to `/health`.
+Set `QWEN_ASR_HEALTH_URL` only when a gateway exposes health somewhere else.
+
+Whisper and Qwen currently use utterance transcription with LiveKit VAD and
+turn endpointing. Set all `*_USE_REALTIME` values to `false`.
+
+## Whisper runtime
+
+The main RunPod worker image bundles Speaches and starts it automatically:
 
 ```dotenv
-NEMOTRON_ASR_BASE_URL=http://nemotron-asr.internal:8080/v1
-NEMOTRON_ASR_MODEL=nvidia/nemotron-3.5-asr-streaming-0.6b
-NEMOTRON_ASR_LANGUAGE=auto
-NEMOTRON_ASR_USE_REALTIME=true
-NEMOTRON_ASR_API_KEY=replace-with-a-secret
+STT_PROVIDER=whisper
+STT_BASE_URL=http://127.0.0.1:8000/v1
+STT_MODEL=Systran/faster-whisper-medium.en
+STT_LANGUAGE=en
+STT_USE_REALTIME=false
+STT_API_KEY=local
 ```
 
-After both companion runtimes pass their smoke tests, enable the selector on
-both the API and worker:
+Use `Systran/faster-whisper-large-v3` only after measuring VRAM usage and
+end-to-end latency on the shared worker GPU.
 
-```dotenv
-STT_AVAILABLE_PROVIDERS=whisper,qwen,nemotron
+## Automatically managed Qwen companion
+
+Qwen runs in its own container so its vLLM dependency graph and GPU allocation
+remain isolated from the voice worker. The checked-in companion image:
+
+- pins `qwen-asr[vllm]` and its compatible vLLM version;
+- launches `qwen-asr-serve` as the container's main process;
+- reads the bearer token from a RunPod Secret via `VLLM_API_KEY`;
+- caches model weights under `/workspace/models/qwen/huggingface`;
+- restarts automatically whenever RunPod starts or replaces the container; and
+- reports liveness through `/health` on port `8011`.
+
+The image is built by `.github/workflows/qwen-asr-image.yml` and published as:
+
+```text
+ghcr.io/OWNER/auren-qwen-asr:sha-<full-commit-sha>
 ```
 
-Set `STT_USE_REALTIME=false` to use utterance-level REST during troubleshooting.
-The checked-in server configuration uses 160 ms right context as a reasonable
-starting point. Benchmark 80, 160, and 320 ms before selecting a production
-latency profile.
+Create a RunPod template using the instructions in
+[`infra/qwen-asr/README.md`](../infra/qwen-asr/README.md). Leave the container
+start command empty so the image entrypoint runs. An old interactive pod that
+used `nohup` is not automatically converted; redeploy it once from the new
+template.
 
-The NeMo-Speech.cpp runtime is Apache 2.0, while the Nemotron model weights are
-governed by NVIDIA's Open Model Development Work License. Complete a license
-review before production distribution.
+## Deployment isolation
 
-## Deployment and resource isolation
+Keep Whisper on the main worker GPU and Qwen on the companion GPU. Selecting a
+provider changes the endpoint used for a LiveKit session; it does not move model
+weights between GPUs.
 
-The bundled RunPod image starts Speaches when `STT_PROVIDER=whisper`. Qwen and
-Nemotron remain companion or external private services. A session selection
-changes the client endpoint; it does not start or stop model servers.
-
-Do not load Whisper, Qwen3-ASR, and Nemotron together on Auren's existing shared
-GPU. The pod already hosts the LLM and TTS; multiple ASR runtimes would distort
-latency measurements and increase out-of-memory risk. Use one of these patterns:
-
-1. Keep Whisper on the worker pod and run Qwen/Nemotron on isolated companion
-   GPUs with private networking.
-2. Use the UI selector to run the same scripted utterances through each provider.
-3. Keep production's default and fallback on Whisper until the evaluation gate
-   is met.
+Do not expose the Qwen port without a network boundary. A vLLM API key protects
+OpenAI-compatible model routes, but it is not a replacement for a private
+network, firewall, or authenticated gateway. Prefer private networking and
+allow traffic only from the Auren worker.
 
 ## Verification
 
-The bootstrap process now validates the selected provider in four stages:
+After deploying both images:
 
-1. Provider health endpoint responds.
-2. A warm-up transcription succeeds.
-3. Chatterbox produces valid, non-silent speech.
-4. The selected STT transcribes the synthesized phrase correctly.
+1. Confirm the Qwen companion returns HTTP 200 from `/health`.
+2. Confirm authenticated `/v1/models` lists `Qwen/Qwen3-ASR-1.7B`.
+3. Set both worker and API allowlists to `whisper,qwen`.
+4. Confirm both choices appear before starting a call.
+5. Run the same recorded utterances through both providers.
+6. Compare WER, finalization latency, real-time factor, GPU memory,
+   hallucinations, Indian English, Hindi, Hinglish, and background noise.
 
-The result is stored in `/workspace/runtime/audio-smoke.json` with the provider,
-model, STT latency, TTS latency, WAV metrics, and transcript. This validates the
-model boundary; a browser microphone test through LiveKit remains required
-before promotion.
-
-For provider evaluation, use the same recorded Auren utterances and compare WER,
-time to first stable partial, finalization latency, real-time factor, GPU memory,
-partial revision rate, hallucinations, Indian English, Hindi, Hinglish, and
-background noise. Do not choose a provider from public WER alone.
+The main worker readiness endpoint checks every enabled provider. If Qwen is
+unhealthy, readiness remains false instead of presenting a provider that cannot
+complete a call.

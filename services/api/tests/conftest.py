@@ -87,7 +87,7 @@ def settings(tmp_path) -> Settings:
         clerk_issuer=ISSUER,
         artifact_storage_dir=str(tmp_path / "artifacts"),
         stt_default_provider="whisper",
-        stt_available_providers="whisper,qwen,nemotron",
+        stt_available_providers="whisper,qwen",
     )
 
 
