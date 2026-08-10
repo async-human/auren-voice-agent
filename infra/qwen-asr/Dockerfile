@@ -42,6 +42,6 @@ COPY --chmod=0755 infra/qwen-asr/entrypoint.sh /opt/qwen-asr/entrypoint.sh
 EXPOSE 8011
 
 HEALTHCHECK --interval=20s --timeout=5s --start-period=20m --retries=6 \
-  CMD-SHELL curl --fail --silent "http://127.0.0.1:${QWEN_ASR_PORT}/health" >/dev/null || exit 1
+  CMD curl --fail --silent "http://127.0.0.1:${QWEN_ASR_PORT}/health" >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/qwen-asr/entrypoint.sh"]
