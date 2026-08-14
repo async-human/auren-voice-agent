@@ -15,6 +15,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     DO_NOT_TRACK=1 \
+    CC=/usr/bin/gcc \
+    CXX=/usr/bin/g++ \
     VLLM_WORKER_MULTIPROC_METHOD=spawn \
     QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B \
     QWEN_ASR_PORT=8011 \
@@ -25,7 +27,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl ffmpeg libsndfile1 procps python3 python3-venv tini \
+       build-essential ca-certificates curl ffmpeg libsndfile1 procps \
+       python3 python3-dev python3-venv tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /uvx /usr/local/bin/
@@ -44,4 +47,4 @@ EXPOSE 8011
 HEALTHCHECK --interval=20s --timeout=5s --start-period=20m --retries=6 \
   CMD curl --fail --silent "http://127.0.0.1:${QWEN_ASR_PORT}/health" >/dev/null || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/qwen-asr/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/opt/qwen-asr/entrypoint.sh"]
