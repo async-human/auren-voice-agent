@@ -868,17 +868,29 @@ def build_tools(gateway: ToolGateway, user_id: str) -> list:
         run_in_minutes: int = 1440,
         job_type: str = "follow_up_reminder",
         workflow_id: str | None = None,
+        query: str | None = None,
     ) -> str:
-        """Schedule a background follow-up that survives the voice session."""
+        """Schedule a background follow-up that survives the voice session.
+
+        Args:
+            message: What to remind or check.
+            run_in_minutes: Delay before the job runs.
+            job_type: follow_up_reminder, email_reply_check, or custom.
+            workflow_id: Optional workflow to resume later.
+            query: Gmail search for email_reply_check jobs.
+        """
+        arguments: dict[str, Any] = {
+            "message": message,
+            "run_in_minutes": run_in_minutes,
+            "job_type": job_type,
+            "workflow_id": workflow_id,
+        }
+        if query:
+            arguments["query"] = query
         return await gateway.invoke(
             "schedule_followup",
             user_id,
-            {
-                "message": message,
-                "run_in_minutes": run_in_minutes,
-                "job_type": job_type,
-                "workflow_id": workflow_id,
-            },
+            arguments,
         )
 
     @function_tool

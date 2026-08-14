@@ -18,13 +18,24 @@ import httpx
 logger = logging.getLogger("auren.memory")
 
 DISTILL_PROMPT = """\
-You extract durable personal memory from a voice conversation with Auren.
+You extract durable personal memory from a voice conversation with June.
 
 Return ONLY valid JSON with this shape:
 {
   "summary": "one short sentence about what this conversation was about",
   "profile_summary": "optional updated 1-2 sentence profile of the user, or null",
   "preferences": "optional short preference notes, or null",
+  "topics": ["short topic labels"],
+  "outcomes": ["decisions or results from this conversation"],
+  "open_threads": ["unresolved commitments or questions to pick up later"],
+  "follow_ups": [
+    {
+      "message": "what to check or remind about",
+      "run_in_minutes": 1440,
+      "job_type": "follow_up_reminder",
+      "query": null
+    }
+  ],
   "memories": ["short durable facts worth remembering across sessions"]
 }
 
@@ -34,6 +45,10 @@ Rules:
 - Do not invent details. Do not include one-off chit-chat.
 - Keep each memory under 160 characters.
 - Return at most 8 memories. Use an empty list when nothing durable was said.
+- open_threads are unfinished user commitments, not assistant suggestions.
+- follow_ups only when the user asked to be reminded or to check later.
+- For "if they don't reply", use job_type=email_reply_check and a Gmail query.
+- Do not include passwords, API keys, or tokens.
 """
 
 
@@ -52,7 +67,7 @@ class TranscriptBuffer:
     def as_dialog(self) -> str:
         lines = []
         for turn in self.turns:
-            speaker = "User" if turn["role"] == "user" else "Auren"
+            speaker = "User" if turn["role"] == "user" else "June"
             lines.append(f"{speaker}: {turn['text']}")
         return "\n".join(lines)
 
@@ -119,7 +134,16 @@ async def distill_with_llm(
     dialog: str,
 ) -> dict[str, Any]:
     if not dialog.strip():
-        return {"summary": None, "profile_summary": None, "preferences": None, "memories": []}
+        return {
+            "summary": None,
+            "profile_summary": None,
+            "preferences": None,
+            "topics": [],
+            "outcomes": [],
+            "open_threads": [],
+            "follow_ups": [],
+            "memories": [],
+        }
 
     payload = {
         "model": llm_model,
@@ -145,6 +169,10 @@ async def distill_with_llm(
             "summary": _fallback_summary(dialog),
             "profile_summary": None,
             "preferences": None,
+            "topics": [],
+            "outcomes": [],
+            "open_threads": [],
+            "follow_ups": [],
             "memories": [],
         }
 
@@ -156,6 +184,10 @@ async def distill_with_llm(
         "summary": _as_optional_str(parsed.get("summary")) or _fallback_summary(dialog),
         "profile_summary": _as_optional_str(parsed.get("profile_summary")),
         "preferences": _as_optional_str(parsed.get("preferences")),
+        "topics": _as_str_list(parsed.get("topics"), limit=12),
+        "outcomes": _as_str_list(parsed.get("outcomes"), limit=12),
+        "open_threads": _as_str_list(parsed.get("open_threads"), limit=12),
+        "follow_ups": _as_follow_ups(parsed.get("follow_ups")),
         "memories": [
             {"content": item.strip()}
             for item in memories
@@ -181,6 +213,10 @@ async def flush_session(
         "summary": distilled.get("summary"),
         "profile_summary": distilled.get("profile_summary"),
         "preferences": distilled.get("preferences"),
+        "topics": distilled.get("topics") or [],
+        "outcomes": distilled.get("outcomes") or [],
+        "open_threads": distilled.get("open_threads") or [],
+        "follow_ups": distilled.get("follow_ups") or [],
         "memories": distilled.get("memories") or [],
     }
     try:
@@ -195,6 +231,65 @@ async def flush_session(
     except httpx.HTTPError as error:
         logger.warning("Could not flush memory session: %s", error)
         return False
+
+
+async def ack_speech(
+    client: httpx.AsyncClient, user_id: str, ids: list[str]
+) -> None:
+    if not ids:
+        return
+    try:
+        response = await client.post(
+            "/v1/notifications/speech-ack",
+            json={"user_id": user_id, "ids": ids[:50]},
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        logger.warning("Could not ack spoken notifications: %s", error)
+
+
+def _as_str_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            items.append(item.strip()[:400])
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _as_follow_ups(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed = {"follow_up_reminder", "email_reply_check", "custom"}
+    items: list[dict[str, Any]] = []
+    for raw in value[:10]:
+        if not isinstance(raw, dict):
+            continue
+        message = _as_optional_str(raw.get("message"))
+        if not message:
+            continue
+        minutes = raw.get("run_in_minutes", 1440)
+        try:
+            run_in_minutes = int(minutes)
+        except (TypeError, ValueError):
+            run_in_minutes = 1440
+        run_in_minutes = max(1, min(run_in_minutes, 60 * 24 * 30))
+        job_type = str(raw.get("job_type") or "follow_up_reminder")
+        if job_type not in allowed:
+            job_type = "follow_up_reminder"
+        item: dict[str, Any] = {
+            "message": message[:2000],
+            "run_in_minutes": run_in_minutes,
+            "job_type": job_type,
+        }
+        query = _as_optional_str(raw.get("query"))
+        if query:
+            item["query"] = query[:500]
+        items.append(item)
+    return items
 
 
 def _as_optional_str(value: Any) -> str | None:

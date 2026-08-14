@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.schemas import (
     MemoryContextResponse,
     MemoryItem,
+    PendingSpeechItem,
     SessionFlushRequest,
     SessionFlushResponse,
+    UnreadNotificationItem,
 )
 from app.models.tables import (
     ConversationSession,
@@ -20,10 +23,14 @@ from app.models.tables import (
     MemoryEvent,
     MemoryEvidence,
     OAuthConnection,
+    ScheduledJob,
     User,
     UserProfile,
     utcnow,
 )
+from app.services import memory_policy
+from app.services import notifications as notification_service
+from app.services import user_settings as settings_service
 
 ACTIVE_MEMORY_LIMIT = 12
 RECALL_LIMIT = 8
@@ -69,17 +76,12 @@ def _memory_item(memory: Memory) -> MemoryItem:
 
 
 def build_greeting(display_name: str | None, last_summary: str | None) -> str:
-    name = (display_name or "").strip().split()[0] if display_name else ""
     snippet = (last_summary or "").strip()
     if len(snippet) > 120:
         snippet = f"{snippet[:117]}..."
-    if name and snippet:
-        return f"Welcome back, {name}. Last time we talked about {snippet}. What should we pick up?"
-    if name:
-        return f"Hello {name}. I’m Auren — what can I help you with?"
     if snippet:
-        return f"Welcome back. Last time we talked about {snippet}. Where shall we begin?"
-    return "Hello. I’m Auren — what can I help you with?"
+        return f"Boss. June online. Last time: {snippet}. Ready to pick it up?"
+    return "Boss. June here — systems up. What are we doing?"
 
 
 def build_instructions_block(
@@ -90,6 +92,8 @@ def build_instructions_block(
     preferences: str | None,
     memories: list[Memory],
     last_summary: str | None,
+    open_threads: list[str] | None = None,
+    unread_notifications: list | None = None,
 ) -> str:
     lines = [
         "Personal context for this user (use naturally; do not recite as a list):",
@@ -106,6 +110,17 @@ def build_instructions_block(
         lines.append(f"- Preferences: {preferences}")
     if last_summary:
         lines.append(f"- Previous conversation: {last_summary}")
+    if open_threads:
+        lines.append("- Open threads from last time:")
+        for thread in open_threads[:6]:
+            lines.append(f"  • {thread}")
+    if unread_notifications:
+        lines.append("- Unread inbox items to mention before a new request:")
+        for item in unread_notifications[:5]:
+            title = getattr(item, "title", None) or item.get("title")
+            body = getattr(item, "body", None) or item.get("body") or ""
+            snippet = body[:160]
+            lines.append(f"  • {title}: {snippet}")
     if memories:
         lines.append("- Things to remember:")
         for memory in memories:
@@ -113,9 +128,8 @@ def build_instructions_block(
     else:
         lines.append("- No durable memories stored yet.")
     lines.append(
-        "Use their name in the initial greeting when known, then use it sparingly "
-        "and only when it adds genuine warmth or clarity. Never begin routine "
-        "responses with their name or repeat it as a conversational tic. "
+        "Address the user as Boss, never by first name. Do not overuse it. "
+        "You are June: dry, loyal, brief, a little wry — like FRIDAY, not a receptionist. "
         "Refer to prior context only when relevant. "
         "If they ask for weather/forecast and a home city appears under "
         "Things to remember or Profile, use that city instead of asking again. "
@@ -127,7 +141,11 @@ def build_instructions_block(
         "email differs, briefly ask which address to use. If no recipient was named, "
         "confirm the known address or ask for a different one; never invent an address. "
         "Creating an event on the user's primary calendar does not require adding their "
-        "own address as an attendee unless they explicitly ask to invite themselves."
+        "own address as an attendee unless they explicitly ask to invite themselves. "
+        "If unread inbox items or due reminders are listed, mention them first. "
+        "For 'remind me tomorrow if they don't reply', call schedule_followup with "
+        "job_type=email_reply_check and a Gmail query. Never send email or change a "
+        "calendar from a follow-up job; those still need confirmation."
     )
     return "\n".join(lines)
 
@@ -189,6 +207,11 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
     ).all()
 
     last_session = await get_last_session(session, user_id)
+    unread_rows, _unread_count = await notification_service.list_notifications(
+        session, user_id, status="unread", limit=5
+    )
+    speech_rows = await notification_service.pending_speech(session, user_id)
+    open_threads = list(last_session.open_threads or []) if last_session else []
 
     display_name = user.display_name if user else None
     email = user.email if user else None
@@ -196,6 +219,30 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
     profile_summary = profile.summary if profile else None
     preferences = profile.preferences if profile else None
     last_summary = last_session.summary if last_session else None
+    unread_items = [
+        UnreadNotificationItem(
+            id=row.id, kind=row.kind, title=row.title, body=row.body
+        )
+        for row in unread_rows
+    ]
+    pending_speech = [
+        PendingSpeechItem(
+            id=row.id,
+            title=row.title,
+            speak_text=(row.speak_text or row.title),
+            kind=row.kind,
+        )
+        for row in speech_rows
+    ]
+    greeting = build_greeting(display_name, last_summary)
+    if pending_speech:
+        spoken = " ".join(item.speak_text for item in pending_speech[:3])
+        greeting = f"{greeting} {spoken}"
+    elif unread_items:
+        greeting = (
+            f"{greeting} {len(unread_items)} item"
+            f"{'' if len(unread_items) == 1 else 's'} waiting in the inbox, Boss."
+        )
 
     return MemoryContextResponse(
         user_id=user_id,
@@ -206,7 +253,10 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
         preferences=preferences,
         memories=[_memory_item(memory) for memory in memories],
         last_session_summary=last_summary,
-        greeting=build_greeting(display_name, last_summary),
+        open_threads=open_threads,
+        pending_speech=pending_speech,
+        unread_notifications=unread_items,
+        greeting=greeting,
         instructions_block=build_instructions_block(
             display_name,
             email,
@@ -215,6 +265,8 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
             preferences,
             list(memories),
             last_summary,
+            open_threads,
+            unread_items,
         ),
     )
 
@@ -251,18 +303,21 @@ async def flush_session(
         )
         turns_saved += 1
 
+    policy = await settings_service.get_or_create(session, payload.user_id)
     if payload.profile_summary or payload.preferences:
-        profile = await session.get(UserProfile, payload.user_id)
-        if profile is None:
-            profile = UserProfile(user_id=payload.user_id)
-            session.add(profile)
-        if payload.profile_summary:
-            profile.summary = payload.profile_summary.strip()
-        if payload.preferences:
-            profile.preferences = payload.preferences.strip()
-        profile.updated_at = utcnow()
+        if memory_policy.allow_autonomous_profile(policy):
+            profile = await session.get(UserProfile, payload.user_id)
+            if profile is None:
+                profile = UserProfile(user_id=payload.user_id)
+                session.add(profile)
+            if payload.profile_summary:
+                profile.summary = payload.profile_summary.strip()
+            if payload.preferences:
+                profile.preferences = payload.preferences.strip()
+            profile.updated_at = utcnow()
 
     memories_saved = 0
+    memories_rejected = 0
     existing = {
         row.strip().lower()
         for row in await session.scalars(
@@ -275,13 +330,17 @@ async def flush_session(
         content = item.content.strip()
         if not content or content.lower() in existing:
             continue
+        reason = memory_policy.allow_autonomous_memory(policy, item)
+        if reason is not None:
+            memories_rejected += 1
+            continue
         memory = Memory(
             user_id=payload.user_id,
-            memory_type="semantic",
-            status="active",
+            memory_type=item.memory_type or "semantic",
+            status="candidate" if (item.memory_type == "procedural") else "active",
             content=content,
-            confidence=0.7,
-            importance=0.5,
+            confidence=item.confidence,
+            importance=item.importance,
             sensitivity="normal",
             source="autonomous",
             source_session_id=conversation.id,
@@ -308,11 +367,30 @@ async def flush_session(
         existing.add(content.lower())
         memories_saved += 1
 
+    jobs_created = 0
+    if memory_policy.allow_prospective_jobs(policy):
+        for follow in payload.follow_ups:
+            payload_data = {"message": follow.message}
+            if follow.query:
+                payload_data["query"] = follow.query
+            session.add(
+                ScheduledJob(
+                    user_id=payload.user_id,
+                    job_type=follow.job_type,
+                    payload=payload_data,
+                    run_at=utcnow() + timedelta(minutes=follow.run_in_minutes),
+                    status="scheduled",
+                )
+            )
+            jobs_created += 1
+
     await session.commit()
     return SessionFlushResponse(
         session_id=conversation.id,
         turns_saved=turns_saved,
         memories_saved=memories_saved,
+        memories_rejected=memories_rejected,
+        jobs_created=jobs_created,
     )
 
 

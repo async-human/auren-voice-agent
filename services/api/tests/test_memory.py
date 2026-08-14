@@ -51,7 +51,8 @@ async def test_memory_flush_and_context(
     assert flush.status_code == 200
     body = flush.json()
     assert body["turns_saved"] == 2
-    assert body["memories_saved"] == 2
+    assert body["memories_saved"] == 0
+    assert body["memories_rejected"] == 2
 
     context = await client.get("/v1/memory/context", params={"user_id": user_id})
     assert context.status_code == 200
@@ -59,15 +60,12 @@ async def test_memory_flush_and_context(
     assert payload["display_name"] == "Alice Example"
     assert payload["email"] == "alice@example.com"
     assert "Authenticated sign-in email: alice@example.com" in payload["instructions_block"]
-    assert "Alice" in payload["greeting"]
+    assert "Boss" in payload["greeting"]
+    assert "June" in payload["greeting"]
     assert "robotics" in (payload["last_session_summary"] or "").lower()
-    assert len(payload["memories"]) == 2
-    assert all(memory["memory_type"] == "semantic" for memory in payload["memories"])
-    assert all(memory["status"] == "active" for memory in payload["memories"])
-    assert all(memory["source"] == "autonomous" for memory in payload["memories"])
-    assert all(memory["confidence"] == 0.7 for memory in payload["memories"])
-    assert "Works on robotics" in payload["instructions_block"]
-    assert "Never begin routine responses with their name" in payload["instructions_block"]
+    assert payload["open_threads"] == ["Ask about Alice's current robotics project"]
+    assert payload["memories"] == []
+    assert "Address the user as Boss" in payload["instructions_block"]
 
 
 async def test_user_can_list_and_forget_memories(
@@ -76,15 +74,15 @@ async def test_user_can_list_and_forget_memories(
     token = make_token(subject="user_clerk_bob", name="Bob Builder")
     user_id = await _user_id(client, token)
 
-    await client.post(
-        "/v1/memory/sessions/flush",
+    remembered = await client.post(
+        "/v1/tools/invoke",
         json={
+            "tool": "remember",
             "user_id": user_id,
-            "turns": [{"role": "user", "text": "I live in Pune.", "sequence": 0}],
-            "summary": "Bob said he lives in Pune",
-            "memories": [{"content": "Lives in Pune"}],
+            "arguments": {"content": "Lives in Pune"},
         },
     )
+    assert remembered.json()["ok"] is True
 
     listed = await client.get("/v1/memory", headers={"Authorization": f"Bearer {token}"})
     assert listed.status_code == 200
@@ -214,6 +212,54 @@ async def test_recall_last_conversation(
     assert body["ok"] is True
     assert "RunPod" in body["summary"]
     assert body["data"]["last_session_summary"] == "Planning the RunPod worker deploy"
+
+
+async def test_autonomous_flush_requires_consent_and_rejects_secrets(
+    client: AsyncClient, make_token: Callable[..., str]
+) -> None:
+    token = make_token(subject="user_clerk_erin", name="Erin")
+    user_id = await _user_id(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    enabled = await client.put(
+        "/v1/settings",
+        headers=headers,
+        json={"autonomous_memory_enabled": True, "prospective_memory_enabled": True},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["autonomous_memory_enabled"] is True
+
+    flush = await client.post(
+        "/v1/memory/sessions/flush",
+        json={
+            "user_id": user_id,
+            "turns": [
+                {"role": "user", "text": "I work on robotics. My API key is sk-secretvalue.", "sequence": 0}
+            ],
+            "summary": "Erin mentioned work and accidentally a secret",
+            "memories": [
+                {"content": "Works on robotics"},
+                {"content": "API key is sk-secretvalue"},
+            ],
+            "follow_ups": [
+                {
+                    "message": "Check if Priya replied about the invoice",
+                    "run_in_minutes": 60,
+                    "job_type": "email_reply_check",
+                    "query": "from:priya subject:invoice",
+                }
+            ],
+        },
+    )
+    assert flush.status_code == 200
+    body = flush.json()
+    assert body["memories_saved"] == 1
+    assert body["memories_rejected"] == 1
+    assert body["jobs_created"] == 1
+
+    listed = await client.get("/v1/memory", headers=headers)
+    contents = [item["content"] for item in listed.json()["memories"]]
+    assert contents == ["Works on robotics"]
 
 
 def _decode_jwt(token: str) -> dict:

@@ -8,7 +8,7 @@ export default function SignUpPage() {
       <div className="grain" aria-hidden="true" />
       <div className="authBrand">
         <span className="mark" />
-        <span>Auren</span>
+        <span>June</span>
       </div>
       <SignUp
         path="/sign-up"

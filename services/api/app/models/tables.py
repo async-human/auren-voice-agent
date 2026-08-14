@@ -330,3 +330,52 @@ class ScheduledJob(Base):
     workflow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserSettings(Base):
+    """Per-user consent, quiet hours, and delivery policy. Enforced in the gateway."""
+
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    timezone_name: Mapped[str] = mapped_column(String(64), default="UTC")
+    quiet_hours_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    quiet_hours_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    max_interruptions_per_day: Mapped[int] = mapped_column(Integer, default=8)
+    spoken_delivery_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    pod_wake_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    autonomous_memory_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    semantic_memory_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    procedural_memory_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    prospective_memory_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    morning_brief_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    morning_brief_hour: Mapped[int] = mapped_column(Integer, default=8)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=func.now()
+    )
+
+
+class Notification(Base):
+    """User-visible inbox item created by the always-on scheduler."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        Index("ix_notifications_user_status_created", "user_id", "status", "created_at"),
+        Index("ix_notifications_user_source", "user_id", "source_type", "source_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    speak_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="unread", index=True)
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    speak_queued: Mapped[bool] = mapped_column(Boolean, default=False)
+    interruption: Mapped[bool] = mapped_column(Boolean, default=False)
+    pod_wake_attempted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,119 +1,79 @@
-"""Always-on Railway/API scheduler for reminders and follow-up jobs."""
+"""Always-on API scheduler for reminders and follow-up jobs."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta, timezone
 
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db import create_session_factory
-from app.models.tables import Reminder, ScheduledJob, WorkflowRun, utcnow
+from app.models.tables import Reminder, utcnow
+from app.services import jobs as job_service
+from app.services import notifications as notification_service
 
 logger = logging.getLogger("auren.scheduler")
 
 
-def _as_utc(value):
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-async def process_due_work(session_factory) -> None:
+async def fire_due_reminders(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    api_settings,
+    http,
+) -> int:
     async with session_factory() as session:
         now = utcnow()
-        reminder_result = await session.execute(
-            update(Reminder)
-            .where(
-                Reminder.status == "pending",
-                Reminder.due_at.is_not(None),
-                Reminder.due_at <= now,
-            )
-            .values(status="due")
-            .execution_options(synchronize_session=False)
-        )
-        fired = reminder_result.rowcount or 0
-
-        jobs = (
+        pending = (
             await session.scalars(
-                select(ScheduledJob)
-                .where(
-                    ScheduledJob.status == "scheduled",
-                    ScheduledJob.run_at <= now,
+                select(Reminder).where(
+                    Reminder.status == "pending",
+                    Reminder.due_at.is_not(None),
+                    Reminder.due_at <= now,
                 )
-                .order_by(ScheduledJob.run_at)
-                .limit(20)
             )
         ).all()
-        delivered = 0
-        for job in jobs:
-            message = str((job.payload or {}).get("message") or "").strip()
-            if not message:
-                job.attempts += 1
-                job.last_error = "Scheduled job payload has no message."
-                if job.attempts >= 3:
-                    job.status = "failed"
-                else:
-                    job.run_at = now + timedelta(minutes=job.attempts)
-                continue
-
-            claim = await session.execute(
-                update(ScheduledJob)
-                .where(
-                    ScheduledJob.id == job.id,
-                    ScheduledJob.status == "scheduled",
-                )
-                .values(
-                    status="completed",
-                    completed_at=now,
-                    attempts=ScheduledJob.attempts + 1,
-                    last_error=None,
-                )
+        fired = 0
+        for reminder in pending:
+            claimed = await session.execute(
+                update(Reminder)
+                .where(Reminder.id == reminder.id, Reminder.status == "pending")
+                .values(status="due")
                 .execution_options(synchronize_session=False)
             )
-            if claim.rowcount != 1:
+            if claimed.rowcount != 1:
                 continue
-
-            session.add(
-                Reminder(
-                    user_id=job.user_id,
-                    title=message,
-                    notes=f"Delivered from scheduled {job.job_type} job {job.id}.",
-                    due_at=now,
-                    timezone_name="UTC",
-                    status="due",
-                )
+            await notification_service.deliver(
+                session,
+                user_id=reminder.user_id,
+                kind="reminder",
+                title=reminder.title,
+                body=reminder.notes or "This reminder is due.",
+                source_type="reminder",
+                source_id=reminder.id,
+                api_settings=api_settings,
+                http=http,
             )
-            if job.workflow_run_id:
-                workflow = await session.get(WorkflowRun, job.workflow_run_id)
-                if workflow is not None and workflow.user_id == job.user_id:
-                    context = dict(workflow.context or {})
-                    delivered_jobs = list(context.get("delivered_job_ids") or [])
-                    if job.id not in delivered_jobs:
-                        delivered_jobs.append(job.id)
-                    context["delivered_job_ids"] = delivered_jobs[-50:]
-                    workflow.context = context
-                    if workflow.status not in {"completed", "failed", "cancelled"}:
-                        workflow.status = "awaiting_input"
-
-            delivered += 1
-            logger.info(
-                "Delivered scheduled job %s type=%s user=%s",
-                job.id,
-                job.job_type,
-                job.user_id,
-            )
-
-        if fired or jobs:
+            fired += 1
+        if fired:
             await session.commit()
-            logger.info(
-                "Scheduler fired reminders=%s delivered_jobs=%s",
-                fired,
-                delivered,
-            )
+            logger.info("Scheduler fired reminders=%s", fired)
+        return fired
+
+
+async def process_due_work(session_factory, settings=None, http=None) -> None:
+    fired = await fire_due_reminders(
+        session_factory, api_settings=settings, http=http
+    )
+    delivered = await job_service.run_due_jobs(
+        session_factory, api_settings=settings, http=http
+    )
+    if fired or delivered:
+        logger.info(
+            "Scheduler tick reminders=%s jobs=%s",
+            fired,
+            delivered,
+        )
+
 
 async def scheduler_loop(app) -> None:
     settings = app.state.settings
@@ -125,7 +85,11 @@ async def scheduler_loop(app) -> None:
     try:
         while True:
             try:
-                await process_due_work(session_factory)
+                await process_due_work(
+                    session_factory,
+                    settings=settings,
+                    http=getattr(app.state, "http_client", None),
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("Scheduler tick failed")
             await asyncio.sleep(interval)

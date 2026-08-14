@@ -29,12 +29,17 @@ class CompleteWorkflowArgs(BaseModel):
 
 
 class ScheduleFollowupArgs(BaseModel):
-    job_type: Literal["follow_up_reminder", "email_reply_check", "custom"] = (
-        "follow_up_reminder"
-    )
+    job_type: Literal[
+        "follow_up_reminder", "email_reply_check", "morning_brief", "custom"
+    ] = "follow_up_reminder"
     run_in_minutes: int = Field(default=1440, ge=1, le=60 * 24 * 30)
     message: str = Field(min_length=1, max_length=2000)
     workflow_id: str | None = None
+    query: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Gmail search query for email_reply_check jobs.",
+    )
     context: dict = Field(default_factory=dict)
 
 
@@ -107,10 +112,13 @@ async def complete_workflow(
 async def schedule_followup(
     context: ToolContext, args: ScheduleFollowupArgs
 ) -> ToolResult:
+    payload = {"message": args.message, **args.context}
+    if args.query:
+        payload["query"] = args.query
     job = ScheduledJob(
         user_id=context.user_id,
         job_type=args.job_type,
-        payload={"message": args.message, **args.context},
+        payload=payload,
         run_at=utcnow() + timedelta(minutes=args.run_in_minutes),
         status="scheduled",
         workflow_run_id=args.workflow_id,
@@ -157,8 +165,10 @@ COMPLETE_SPEC = ToolSpec(
 SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
     name="schedule_followup",
     description=(
-        "Schedule a background follow-up that survives the voice session "
-        "(for example remind tomorrow if no reply)."
+        "Schedule a background follow-up that survives the voice session. "
+        "Use job_type=email_reply_check with query set to a Gmail search "
+        "(for example from:alex subject:invoice) to check for a reply later. "
+        "Use follow_up_reminder for a simple nudge. These jobs never send email."
     ),
     args_model=ScheduleFollowupArgs,
     handler=schedule_followup,

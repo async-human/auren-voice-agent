@@ -20,7 +20,9 @@ from app.routers import (
     connections,
     health,
     memory,
+    notifications,
     page_context,
+    settings as settings_router,
     tools,
     voice,
 )
@@ -158,6 +160,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tools.router)
     app.include_router(memory.worker_router)
     app.include_router(memory.user_router)
+    app.include_router(notifications.worker_router)
+    app.include_router(notifications.user_router)
+    app.include_router(settings_router.router)
     app.include_router(page_context.router)
     app.include_router(connections.router)
     app.include_router(actions.router)

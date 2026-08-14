@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_poll_seconds: int = Field(default=30, ge=5)
 
+    # Optional: wake a stopped RunPod when spoken delivery is allowed.
+    # Leave unset for local testing while the pod is already running.
+    runpod_api_key: str | None = None
+    runpod_pod_id: str | None = None
+
     # STT choices exposed to signed-in users. The API puts the validated choice
     # into signed LiveKit metadata; the worker owns endpoint credentials.
     stt_default_provider: Literal["whisper", "qwen"] = "whisper"
@@ -147,6 +152,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.auren_env == "production"
+
+    @property
+    def pod_wake_configured(self) -> bool:
+        return bool(self.runpod_api_key and self.runpod_pod_id)
 
 
 @lru_cache

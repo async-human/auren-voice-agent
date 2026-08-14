@@ -45,6 +45,10 @@ Do not enable Jupyter or SSH in the production template unless operationally
 required. Do not install packages interactively after deployment; update the
 Dockerfile and redeploy an immutable image instead.
 
+If startup fails with `Failed to find C compiler`, the image is missing
+`build-essential`. The Dockerfile installs it for Triton's runtime JIT; rebuild
+and redeploy rather than patching a live pod.
+
 The first boot downloads roughly 4.4 GB of model files and performs vLLM model
 and audio warm-up. Subsequent boots reuse `/workspace` but still need several
 minutes to load weights into GPU memory. Automatic startup removes manual work;

@@ -16,6 +16,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HUB_DISABLE_TELEMETRY=1 \
     DO_NOT_TRACK=1 \
     VLLM_WORKER_MULTIPROC_METHOD=spawn \
+    # RunPod may wrap the entrypoint, so Tini is not always PID 1.
+    TINI_SUBREAPER=1 \
+    CC=/usr/bin/gcc \
     QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B \
     QWEN_ASR_PORT=8011 \
     QWEN_ASR_GPU_MEMORY_UTILIZATION=0.55 \
@@ -23,8 +26,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QWEN_ASR_MAX_NUM_SEQS=8 \
     QWEN_ASR_ENFORCE_EAGER=true
 
+# vLLM/Triton JIT-compiles native launcher modules on first load, so a C
+# toolchain must remain available in the runtime image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+       build-essential \
        ca-certificates curl ffmpeg libsndfile1 procps python3 python3-venv tini \
     && rm -rf /var/lib/apt/lists/*
 

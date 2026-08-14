@@ -68,7 +68,7 @@ def test_alembic_adopts_preexisting_development_schema(
             )
         }
 
-    assert version == ("0007",)
+    assert version == ("0008",)
     assert {"memory_type", "status", "confidence", "source", "updated_at"} <= memory_columns
     assert {"topics", "outcomes", "open_threads", "importance"} <= session_columns
     assert "timezone_name" in oauth_columns
@@ -84,6 +84,8 @@ def test_alembic_adopts_preexisting_development_schema(
         "workflow_runs",
         "scheduled_jobs",
         "artifacts",
+        "user_settings",
+        "notifications",
     } <= tables
 
 

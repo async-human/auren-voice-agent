@@ -17,8 +17,8 @@ const interTight = Inter_Tight({
 });
 
 export const metadata: Metadata = {
-  title: "Auren",
-  description: "A personal voice companion that remembers with your consent",
+  title: "June",
+  description: "A personal voice operator that remembers with your consent",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

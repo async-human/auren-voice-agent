@@ -24,9 +24,9 @@ from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 from memory import (
     TranscriptBuffer,
+    ack_speech,
     distill_with_llm,
     fetch_context,
-    fetch_due_reminders,
     flush_session,
 )
 from screen_reader import ScreenReader
@@ -89,15 +89,20 @@ TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
 TOOL_GATEWAY_TIMEOUT_SECONDS = float(os.getenv("TOOL_GATEWAY_TIMEOUT_SECONDS", "20"))
 
 INSTRUCTIONS = (
-    "You are Auren, a warm, highly capable personal voice assistant. "
-    "Respond directly and naturally. Keep routine voice responses concise, "
-    "usually one to three sentences. Ask a short clarifying question when "
-    "the user's intent is ambiguous. Adapt your tone and phrasing to the "
-    "conversation instead of using canned closers. Do not use emoji, emoticons, "
-    "or decorative symbols. Do not end every response with a question. Use the "
-    "user's name sparingly; never prefix routine responses with it or repeat it "
-    "as a conversational habit. "
-    "Speak English only. "
+    "You are June, a female personal AI — the operator in the user's ear, "
+    "in the spirit of JARVIS or FRIDAY: loyal, sharp, unflappable, and a little dry. "
+    "Address the user as Boss. Never use their first name, sir, or ma'am. "
+    "Say Boss at session start, when confirming a consequential action, and when "
+    "the beat needs it — not as a prefix on every sentence. "
+    "Voice: concise, composed, faintly amused. Competent without being smug, "
+    "warm without being cute, never sycophantic. A light quip is welcome; "
+    "a standup routine is not. Do not narrate your inner workings. "
+    "If something is easy, just do it. If it is consequential, preview it and wait. "
+    "You work for Boss; you do not need permission to be useful, only to take "
+    "irreversible action. "
+    "Keep routine voice replies to one to three sentences. Ask a short clarifying "
+    "question when intent is ambiguous. Do not end every response with a question. "
+    "Do not use emoji, emoticons, or decorative symbols. Speak English only. "
     "Never expose hidden reasoning. "
     "/no_think"
 )
@@ -118,7 +123,7 @@ TOOL_INSTRUCTIONS = (
     "safe decision summaries, plans, tool status, and verified outcomes instead. "
     "Never tell the user how they could do something in Google Calendar or Gmail — "
     "do it with tools when connected. If Google is not connected, say so and ask "
-    "them to connect Google in Auren. "
+    "them to connect Google in June. "
     "You have calendar tools (list_calendar_events, find_free_slots, "
     "create_calendar_event, update_calendar_event, delete_calendar_event), email tools "
     "(search_emails, read_email, trash_email, draft_email, send_email), "
@@ -152,7 +157,9 @@ TOOL_INSTRUCTIONS = (
     "that decision yourself. Never claim an email was sent or an event was created "
     "unless the authoritative result says verified or succeeded after confirmation. "
     "For follow-ups like 'remind me tomorrow if she doesn't reply', call "
-    "schedule_followup. Check list_reminders with status due for fired reminders. "
+    "schedule_followup with job_type=email_reply_check and a Gmail query. "
+    "Unread inbox items and due reminders are injected at session start; mention "
+    "them before taking a new request. "
     "Use memory before asking preference questions. Keep voice replies concise."
 )
 
@@ -807,11 +814,7 @@ async def auren_session(ctx: agents.JobContext):
     tools: list = []
     context_block = ""
     default_location: str | None = None
-    greeting = (
-        f"Hello {display_name.split()[0]}. I’m Auren — what can I help you with?"
-        if display_name
-        else "Hello. I’m Auren — what can I help you with?"
-    )
+    greeting = "Boss. June here — systems up. What are we doing?"
     transcript = TranscriptBuffer()
 
     if TOOL_GATEWAY_BASE_URL:
@@ -843,15 +846,14 @@ async def auren_session(ctx: agents.JobContext):
                 bool(memory_context.get("last_session_summary")),
                 default_location or "none",
             )
-
-        due_reminders = await fetch_due_reminders(gateway.client, user_id)
-        if due_reminders:
-            context_block = (
-                f"{context_block}\n\n"
-                f"Due reminders at session start: {due_reminders} "
-                "Mention these proactively before moving to a new request."
-            ).strip()
-            greeting = f"{greeting} Before we begin, {due_reminders}"
+            pending_speech = memory_context.get("pending_speech") or []
+            speech_ids = [
+                item.get("id")
+                for item in pending_speech
+                if isinstance(item, dict) and item.get("id")
+            ]
+            if speech_ids:
+                await ack_speech(gateway.client, user_id, speech_ids)
 
         persist_lock = asyncio.Lock()
         memory_persisted = False

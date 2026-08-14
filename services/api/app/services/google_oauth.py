@@ -32,6 +32,7 @@ SCOPES = (
     "email",
     "profile",
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendars.readonly",
     # gmail.modify is the narrowest Gmail scope that supports reading,
     # drafting/sending, and reversible move-to-Trash operations. It explicitly
     # does not permit immediate permanent deletion.
@@ -257,22 +258,37 @@ async def revoke_connection(
     row = await get_connection(session, user_id)
     if row is None:
         return False, False
-    encrypted = row.refresh_token_encrypted or row.access_token_encrypted
-    token = decrypt_secret(settings, encrypted)
+
     revoked = False
-    try:
-        response = await google_request(
-            http,
-            "POST",
-            GOOGLE_REVOKE,
-            params={"token": token},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        revoked = response.status_code == 200
-        if not revoked:
-            logger.warning("Google token revocation returned %s", response.status_code)
-    except httpx.HTTPError:
-        logger.warning("Google token revocation request failed", exc_info=True)
+    encrypted = row.refresh_token_encrypted or row.access_token_encrypted
+    if encrypted:
+        try:
+            token = decrypt_secret(settings, encrypted)
+        except ValueError:
+            # TOKEN_ENCRYPTION_KEY changed or the ciphertext is corrupt. Still
+            # delete the local row so the user can reconnect cleanly.
+            logger.warning(
+                "Could not decrypt Google credential for user %s; removing local connection only",
+                user_id,
+            )
+            token = None
+        if token:
+            try:
+                response = await google_request(
+                    http,
+                    "POST",
+                    GOOGLE_REVOKE,
+                    params={"token": token},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                revoked = response.status_code == 200
+                if not revoked:
+                    logger.warning(
+                        "Google token revocation returned %s", response.status_code
+                    )
+            except httpx.HTTPError:
+                logger.warning("Google token revocation request failed", exc_info=True)
+
     await session.delete(row)
     await session.commit()
     return True, revoked

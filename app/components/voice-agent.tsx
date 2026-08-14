@@ -10,6 +10,7 @@ import MarkdownMessage from "./markdown-message";
 const MemoryPanel = dynamic(() => import("./memory-panel"), { ssr: false });
 const ConnectionsPanel = dynamic(() => import("./connections-panel"), { ssr: false });
 const ArtifactsPanel = dynamic(() => import("./artifacts-panel"), { ssr: false });
+const InboxPanel = dynamic(() => import("./inbox-panel"), { ssr: false });
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "paused";
 type SttProvider = "whisper" | "qwen";
@@ -26,6 +27,12 @@ const fallbackSttOptions: SttOption[] = [
     id: "whisper",
     label: "Whisper",
     description: "Mature and dependable multilingual transcription.",
+    realtime: false,
+  },
+  {
+    id: "qwen",
+    label: "Qwen3-ASR",
+    description: "Accuracy-focused multilingual transcription.",
     realtime: false,
   },
 ];
@@ -283,7 +290,7 @@ function describeFailure(error: unknown): string {
     return "Your browser blocked microphone access. Allow it for this site and try again.";
   }
   if (/Sign in to continue|401/.test(message)) {
-    return "Your session expired. Sign in again to keep talking to Auren.";
+    return "Your session expired. Sign in again to keep talking to June.";
   }
   if (/Authentication is not configured/i.test(message)) {
     return "The API has no identity provider configured. Set CLERK_ISSUER on the API, or DEV_USER_ID for offline work.";
@@ -299,12 +306,12 @@ const labels: Record<Phase, string> = {
   connecting: "Joining…",
   listening: "Listening…",
   thinking: "One moment",
-  speaking: "Auren is speaking",
+  speaking: "June is speaking",
   paused: "Paused — tap to resume",
 };
 
 export default function VoiceAgent() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded, isSignedIn } = useAuth();
   const [phase, setPhase] = useState<Phase>("idle");
   const [notice, setNotice] = useState("Your microphone stays in the LiveKit session");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -318,6 +325,8 @@ export default function VoiceAgent() {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isConnectionsOpen, setIsConnectionsOpen] = useState(false);
   const [isArtifactsOpen, setIsArtifactsOpen] = useState(false);
+  const [isInboxOpen, setIsInboxOpen] = useState(false);
+  const [inboxUnread, setInboxUnread] = useState(0);
   const [sttOptions, setSttOptions] = useState<SttOption[]>(fallbackSttOptions);
   const [selectedSttProvider, setSelectedSttProvider] =
     useState<SttProvider>("whisper");
@@ -406,7 +415,33 @@ export default function VoiceAgent() {
     }
   }, [getToken]);
 
+  const refreshInboxUnread = useCallback(async () => {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (!apiBaseUrl) return;
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const response = await fetch(
+        `${apiBaseUrl.replace(/\/$/, "")}/v1/notifications?status=unread`,
+        { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+      );
+      if (!response.ok) return;
+      const body = (await response.json()) as { unread_count: number };
+      setInboxUnread(body.unread_count || 0);
+    } catch {
+      // Badge is optional; ignore transient failures.
+    }
+  }, [getToken]);
+
   useEffect(() => {
+    void refreshInboxUnread();
+    const timer = window.setInterval(() => void refreshInboxUnread(), 15000);
+    return () => window.clearInterval(timer);
+  }, [refreshInboxUnread]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
+
     const loadSttOptions = async () => {
       const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
       if (!apiBaseUrl) return;
@@ -440,7 +475,7 @@ export default function VoiceAgent() {
       }
     };
     void loadSttOptions();
-  }, [getToken]);
+  }, [getToken, isLoaded, isSignedIn]);
 
   const chooseSttProvider = useCallback(
     (provider: SttProvider) => {
@@ -550,7 +585,7 @@ export default function VoiceAgent() {
           } catch (error) {
             console.error("Auren voice playback blocked", error);
             setFailure(
-              "Browser blocked Auren’s voice. Click “Auren’s voice” or tap anywhere on the page, then ask again.",
+              "Browser blocked June’s voice. Click “June’s voice” or tap anywhere on the page, then ask again.",
             );
           }
         };
@@ -607,7 +642,7 @@ export default function VoiceAgent() {
         if (role === "user") {
           setNotice("Got it — thinking");
         } else {
-          setNotice("Auren replied — voice may take a moment while speech synthesizes");
+          setNotice("June replied — voice may take a moment while speech synthesizes");
           void activeRoom.startAudio().catch(() => {
             // Autoplay unlock is best-effort; TrackSubscribed also retries play().
           });
@@ -866,7 +901,7 @@ export default function VoiceAgent() {
         );
         if (agentIsSpeaking) {
           setPhase("speaking");
-          setNotice("Auren is speaking");
+          setNotice("June is speaking");
           if (!voiceMutedRef.current) {
             void activeRoom.startAudio().catch(() => undefined);
             audioElementsRef.current.forEach((element) => {
@@ -999,7 +1034,7 @@ export default function VoiceAgent() {
       setIsScreenSharing(nextEnabled);
       setNotice(
         nextEnabled
-          ? "Screen shared — ask Auren what you’re looking at"
+          ? "Screen shared — ask June what you’re looking at"
           : "Screen share stopped",
       );
     } catch (error) {
@@ -1048,7 +1083,7 @@ export default function VoiceAgent() {
       }
     });
     setIsVoiceMuted(nextMuted);
-    setNotice(nextMuted ? "Auren’s voice is muted" : "Auren’s voice is on");
+    setNotice(nextMuted ? "June’s voice is muted" : "June’s voice is on");
     if (!nextMuted) setFailure(null);
   }, [isVoiceMuted]);
 
@@ -1077,7 +1112,7 @@ export default function VoiceAgent() {
       ]);
       setDraft("");
       setPhase("thinking");
-      setNotice("Message sent — Auren is thinking");
+      setNotice("Message sent — June is thinking");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Message could not be sent");
     } finally {
@@ -1132,14 +1167,24 @@ export default function VoiceAgent() {
           <div className="who">
             <span className="mark" aria-hidden="true"><i /></span>
             <span className="whoName">
-              Auren
-              <small>Your private intelligence</small>
+              June
+              <small>Standing by</small>
             </span>
           </div>
           <div className="account">
             <Link className="leave homeLink" href="/">
               Home
             </Link>
+            <button
+              className="leave"
+              type="button"
+              onClick={() => setIsInboxOpen(true)}
+            >
+              Inbox
+              {inboxUnread > 0 && (
+                <span className="inboxBadge">{inboxUnread > 9 ? "9+" : inboxUnread}</span>
+              )}
+            </button>
             <button
               className="leave"
               type="button"
@@ -1170,6 +1215,13 @@ export default function VoiceAgent() {
           </div>
         </header>
 
+        {isInboxOpen && (
+          <InboxPanel
+            open={isInboxOpen}
+            onClose={() => setIsInboxOpen(false)}
+            onUnreadChange={setInboxUnread}
+          />
+        )}
         {isMemoryOpen && (
           <MemoryPanel open={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
         )}
@@ -1190,9 +1242,9 @@ export default function VoiceAgent() {
               <p className="presenceEyebrow">
                 <span className="liveDot" aria-hidden="true" />
                 {activeToolActivity
-                  ? "Auren is taking action"
+                  ? "June is taking action"
                   : phase === "idle"
-                    ? "Auren is here"
+                    ? "June is here"
                     : "Private session active"}
               </p>
               <div
@@ -1218,12 +1270,11 @@ export default function VoiceAgent() {
               </div>
             </div>
 
-            {sttOptions.length > 1 && (
-              <section className="sttPicker" aria-label="Speech recognition model">
+            <section className="sttPicker" aria-label="Speech recognition model">
                 <div className="sttPickerHead">
                   <div>
                     <span>Voice recognition</span>
-                    <strong>Choose how Auren hears you</strong>
+                    <strong>Choose how June hears you</strong>
                   </div>
                   <small>{phase === "idle" ? "For next call" : "In use"}</small>
                 </div>
@@ -1251,7 +1302,6 @@ export default function VoiceAgent() {
                     ?.description ?? "Speech recognition for this session."}
                 </p>
               </section>
-            )}
 
             <section className="activityRail" aria-label="Tool activity">
               <p className="srOnly" aria-live="polite" aria-atomic="true">
@@ -1313,7 +1363,7 @@ export default function VoiceAgent() {
                 <div className="activityEmpty">
                   <span aria-hidden="true"><i /><i /><i /></span>
                   <p>
-                    Auren will show its plan, safe decision summaries, tool calls,
+                    June will show her plan, safe decision summaries, tool calls,
                     approvals, and verified outcomes here.
                   </p>
                 </div>
@@ -1374,7 +1424,7 @@ export default function VoiceAgent() {
             <div className="workspaceHead">
               <div>
                 <span>Conversation space</span>
-                <h2>{messages.length ? "You and Auren" : "A new thought"}</h2>
+                <h2>{messages.length ? "You and June" : "A new thought"}</h2>
               </div>
               <span className="turnCount"><i aria-hidden="true" />{messages.length} {messages.length === 1 ? "turn" : "turns"}</span>
             </div>
@@ -1387,12 +1437,12 @@ export default function VoiceAgent() {
             {!hasConversation && (
               <div className="emptyConversation">
                 <span className="emptySignal" aria-hidden="true"><i /><i /><i /><i /><i /></span>
-                <p className="emptyEyebrow">No commands. No learning curve.</p>
-                <h1>Just begin.</h1>
-                <p>Speak as naturally as you would to someone who already understands.</p>
+                <p className="emptyEyebrow">June is standing by.</p>
+                <h1>Go ahead, Boss.</h1>
+                <p>Talk like you would to an operator who already has the brief.</p>
                 {pageContext?.present && (
                   <p className="pageContextHint">
-                    Page ready: {pageContext.title || "Shared article"}. Ask Auren to explain it.
+                    Page ready: {pageContext.title || "Shared article"}. Ask June to explain it.
                   </p>
                 )}
               </div>
@@ -1405,7 +1455,7 @@ export default function VoiceAgent() {
             {messages.map((message) => (
               <article className={`chatMessage ${message.role}`} key={message.id}>
                 <span className="chatSpeaker">
-                  {message.role === "user" ? "You" : "Auren"}
+                  {message.role === "user" ? "You" : "June"}
                 </span>
                 {message.role === "assistant" ? (
                   <MarkdownMessage text={message.text} />
@@ -1417,15 +1467,15 @@ export default function VoiceAgent() {
             {interim && (
               <article className={`chatMessage ${interim.role} interimMessage`}>
                 <span className="chatSpeaker">
-                  {interim.role === "user" ? "You" : "Auren"}
+                  {interim.role === "user" ? "You" : "June"}
                 </span>
                 <p className="chatBubble" dir="ltr">{interim.text}</p>
               </article>
             )}
             {isWaitingForAuren && !interim && (
               <article className="chatMessage assistant interimMessage">
-                <span className="chatSpeaker">Auren</span>
-                <div className="chatBubble thinkingBubble" aria-label="Auren is thinking">
+                <span className="chatSpeaker">June</span>
+                <div className="chatBubble thinkingBubble" aria-label="June is thinking">
                   <span className="ellipsis">
                     <i /><i /><i />
                   </span>
@@ -1451,7 +1501,7 @@ export default function VoiceAgent() {
 
           {isTypeOpen && (
             <form className="typebar" onSubmit={sendTextMessage}>
-              <label className="srOnly" htmlFor="message-input">Message Auren</label>
+              <label className="srOnly" htmlFor="message-input">Message June</label>
               <input
                 id="message-input"
                 type="text"
@@ -1481,7 +1531,7 @@ export default function VoiceAgent() {
                   <path d="M11 5 6 9H3v6h3l5 4V5z" />
                   {!isVoiceMuted && <path d="M15.5 9.5a4 4 0 0 1 0 5M18.5 7a8 8 0 0 1 0 10" />}
                 </svg>
-                <span>{isVoiceMuted ? "Voice off" : "Auren’s voice"}</span>
+                <span>{isVoiceMuted ? "Voice off" : "June’s voice"}</span>
               </button>
             )}
             <button
