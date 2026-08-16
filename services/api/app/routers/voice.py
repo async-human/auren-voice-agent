@@ -25,11 +25,39 @@ STT_OPTION_DETAILS = {
 }
 
 
+async def _available_stt_providers(request: Request, settings: Settings) -> list[str]:
+    """Return providers verified by the worker, not merely configured names."""
+    if not settings.voice_worker_health_url:
+        return settings.stt_provider_list
+    try:
+        response = await request.app.state.http_client.get(
+            settings.voice_worker_health_url,
+            timeout=3.0,
+        )
+        payload = response.json()
+        reported = payload.get("stt_available_providers") or []
+        return [
+            provider
+            for provider in settings.stt_provider_list
+            if provider in reported
+        ]
+    except Exception as error:  # noqa: BLE001 - availability must fail closed
+        logger.warning("Could not verify voice worker STT availability: %s", error)
+        return []
+
+
 @router.get("/stt-options", response_model=VoiceSTTOptionsResponse)
 async def stt_options(
+    request: Request,
     settings: Settings = Depends(get_settings),
     _user: User = Depends(require_user),
 ) -> VoiceSTTOptionsResponse:
+    providers = await _available_stt_providers(request, settings)
+    if settings.stt_default_provider not in providers:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The voice service is still starting",
+        )
     return VoiceSTTOptionsResponse(
         default_provider=settings.stt_default_provider,
         providers=[
@@ -39,7 +67,7 @@ async def stt_options(
                 description=STT_OPTION_DETAILS[provider][1],
                 realtime=STT_OPTION_DETAILS[provider][2],
             )
-            for provider in settings.stt_provider_list
+            for provider in providers
         ],
     )
 
@@ -64,6 +92,12 @@ async def create_token(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"STT provider {stt_provider!r} is not available",
+        )
+    available_providers = await _available_stt_providers(request, settings)
+    if stt_provider not in available_providers:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"STT provider {stt_provider!r} is currently unavailable",
         )
 
     try:

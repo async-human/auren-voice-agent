@@ -68,10 +68,14 @@ def audio_smoke() -> tuple[bool, dict[str, object]]:
 
 
 def readiness() -> tuple[bool, dict[str, object]]:
+    provider_checks = {
+        provider: http_ok(config.health_url, api_key=config.api_key)
+        for provider, config in STT_CONFIGS.items()
+    }
     checks: dict[str, tuple[bool, str]] = {
         **{
-            f"stt_{provider}": http_ok(config.health_url, api_key=config.api_key)
-            for provider, config in STT_CONFIGS.items()
+            f"stt_{provider}": result
+            for provider, result in provider_checks.items()
         },
         "ollama": http_ok("http://127.0.0.1:11434/api/version"),
         "chatterbox": http_ok("http://127.0.0.1:8004/v1/audio/voices"),
@@ -79,13 +83,24 @@ def readiness() -> tuple[bool, dict[str, object]]:
     }
     marker = Path("/workspace/runtime/models-ready").is_file()
     audio_ready, audio_result = audio_smoke()
-    ready = marker and audio_ready and all(value[0] for value in checks.values())
+    core_checks = (
+        provider_checks[STT_CONFIG.provider][0],
+        checks["ollama"][0],
+        checks["chatterbox"][0],
+        checks["voice_worker"][0],
+    )
+    ready = marker and audio_ready and all(core_checks)
+    available_providers = [
+        provider for provider, result in provider_checks.items() if result[0]
+    ]
+    degraded = ready and len(available_providers) < len(STT_CONFIGS)
     return ready, {
-        "status": "ready" if ready else "starting",
+        "status": "degraded" if degraded else ("ready" if ready else "starting"),
         "models_ready": marker,
         "stt_provider": STT_CONFIG.provider,
         "stt_model": STT_CONFIG.model,
-        "stt_available_providers": list(STT_CONFIGS),
+        "stt_available_providers": available_providers,
+        "stt_configured_providers": list(STT_CONFIGS),
         "active_sessions": active_sessions(),
         "audio_smoke": audio_result,
         "checks": {

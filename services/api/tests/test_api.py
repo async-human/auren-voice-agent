@@ -3,8 +3,14 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from httpx import AsyncClient
+import pytest
+
+from app.config import Settings
+from app.routers import voice
 
 
 async def test_health(client: AsyncClient) -> None:
@@ -60,6 +66,38 @@ async def test_voice_stt_options_are_authenticated_and_config_driven(
         "qwen",
     ]
     assert all(provider["realtime"] is False for provider in body["providers"])
+
+
+async def test_stt_options_filter_unhealthy_companion_provider(settings) -> None:
+    worker_response = SimpleNamespace(
+        json=lambda: {"stt_available_providers": ["whisper"]}
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                http_client=SimpleNamespace(get=AsyncMock(return_value=worker_response))
+            )
+        )
+    )
+    checked_settings = settings.model_copy(
+        update={"voice_worker_health_url": "https://worker.test/health/ready"}
+    )
+
+    providers = await voice._available_stt_providers(request, checked_settings)
+
+    assert providers == ["whisper"]
+
+
+def test_production_requires_worker_health_for_multiple_stt_providers(settings) -> None:
+    values = settings.model_dump()
+    values.update(
+        auren_env="production",
+        stt_available_providers="whisper,qwen",
+        voice_worker_health_url=None,
+    )
+
+    with pytest.raises(ValueError, match="VOICE_WORKER_HEALTH_URL"):
+        Settings(**values)
 
 
 async def test_voice_token_carries_selected_stt_provider(

@@ -104,12 +104,12 @@ export default function ArtifactsPanel({ open, onClose }: Props) {
         <button type="button" className="leave" onClick={onClose}>Close</button>
       </div>
       <p className="memoryLead">
-        Documents June created for you. Downloads are authenticated and private to your account.
+        Documents Auren created for you. Downloads are authenticated and private to your account.
       </p>
       {loading && <p className="tip">Loading…</p>}
       {error && <p className="failure" role="alert">{error}</p>}
       {!loading && !error && artifacts.length === 0 && (
-        <p className="tip">No files yet. Ask June to create a report, spreadsheet, or presentation.</p>
+        <p className="tip">No files yet. Ask Auren to create a report, spreadsheet, or presentation.</p>
       )}
       <ul className="artifactList">
         {artifacts.map((artifact) => (

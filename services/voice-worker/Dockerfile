@@ -12,7 +12,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
-COPY agent.py tools.py session_state.py memory.py ./
+COPY agent.py tools.py session_state.py memory.py skills.py ./
+COPY skill_specs ./skill_specs
 
 RUN useradd --create-home --uid 10001 auren \
     && chown -R auren:auren /app

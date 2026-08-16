@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_session
+from app.config import Settings
+from app.dependencies import get_session, get_settings
 from app.models.schemas import (
     MemoryContextResponse,
     MemoryListResponse,
@@ -28,8 +29,15 @@ user_router = APIRouter(prefix="/v1/memory", tags=["memory"])
 async def worker_context(
     user_id: str = Query(min_length=1, max_length=128),
     session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> MemoryContextResponse:
-    return await memory_service.get_context(session, user_id)
+    return await memory_service.get_context(
+        session,
+        user_id,
+        assistant_name=settings.assistant_name,
+        form_of_address=settings.assistant_form_of_address,
+        assistant_language=settings.assistant_language,
+    )
 
 
 @worker_router.post("/sessions/flush", response_model=SessionFlushResponse)

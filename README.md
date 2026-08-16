@@ -21,6 +21,11 @@ Whisper remains the default; see
 [`docs/STT_PROVIDERS.md`](docs/STT_PROVIDERS.md) for deployment profiles,
 resource isolation, and the evaluation gate.
 
+The first focused product workflow is the client follow-up operator described
+in [`docs/PRODUCT_WEDGE.md`](docs/PRODUCT_WEDGE.md). It combines meeting and
+email context, documents, approvals, and scheduled follow-ups into one
+measurable end-to-end outcome.
+
 ## Agent tools
 
 The worker holds no business logic. Each tool is a thin call to the Railway

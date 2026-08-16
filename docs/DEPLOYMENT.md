@@ -130,6 +130,12 @@ these paths:
   PUBLIC_APP_URL
   TOKEN_ENCRYPTION_KEY         # independent high-entropy key; required with Google in prod
   DEFAULT_TIMEZONE             # e.g. Asia/Kolkata
+  ASSISTANT_NAME               # keep aligned with the worker, default Auren
+  ASSISTANT_FORM_OF_ADDRESS    # optional; blank is neutral
+  ASSISTANT_LANGUAGE           # match-user or a fixed language
+  STT_DEFAULT_PROVIDER
+  STT_AVAILABLE_PROVIDERS
+  VOICE_WORKER_HEALTH_URL      # public worker /health/ready endpoint
 
 /voice-worker
   AUREN_ENV
@@ -137,10 +143,19 @@ these paths:
   LIVEKIT_API_KEY
   LIVEKIT_API_SECRET
   LIVEKIT_AGENT_NAME
+  ASSISTANT_NAME
+  ASSISTANT_FORM_OF_ADDRESS
+  ASSISTANT_LANGUAGE
+  AGENT_SKILLS                 # client_followup
   TOOL_GATEWAY_BASE_URL
   TOOL_GATEWAY_TOKEN
   FASTER_WHISPER_BASE_URL
   FASTER_WHISPER_MODEL
+  STT_PROVIDER
+  STT_AVAILABLE_PROVIDERS
+  QWEN_ASR_BASE_URL            # when qwen is enabled
+  QWEN_ASR_HEALTH_URL
+  QWEN_ASR_API_KEY
   LLM_BASE_URL
   LLM_MODEL
   CHATTERBOX_BASE_URL

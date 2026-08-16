@@ -9,7 +9,7 @@ export function LandingNavLink() {
   if (isSignedIn) {
     return (
       <Link className="leave" href="/talk">
-        Open June
+        Open Auren
       </Link>
     );
   }

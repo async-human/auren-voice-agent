@@ -12,9 +12,9 @@ export default function Landing() {
       <div className="grain" aria-hidden="true" />
 
       <header className="landingTop">
-        <a className="landingWordmark" href="#top" aria-label="June home">
+        <a className="landingWordmark" href="#top" aria-label="Auren home">
           <span className="brandGlyph" aria-hidden="true"><i /></span>
-          <span>June</span>
+          <span>Auren</span>
         </a>
         <div className="landingNav">
           <span className="privacyLabel">
@@ -37,8 +37,8 @@ export default function Landing() {
               that feels <em>present.</em>
             </h1>
             <p className="landingLine">
-              Meet June — a sharp, loyal operator who listens, remembers with
-              permission, and turns conversation into action. She calls you Boss.
+              Meet Auren — a sharp, dependable operator that listens, remembers with
+              permission, and turns conversation into completed action.
             </p>
             <div className="landingCta">
               <LandingPrimaryCta />
@@ -47,7 +47,7 @@ export default function Landing() {
                 Ready when you are
               </span>
             </div>
-            <ul className="landingPrinciples" aria-label="June principles">
+            <ul className="landingPrinciples" aria-label="Auren principles">
               <li><strong>Natural</strong><span>Talk without commands</span></li>
               <li><strong>Personal</strong><span>Memory you control</span></li>
               <li><strong>Capable</strong><span>Actions you approve</span></li>
@@ -76,7 +76,7 @@ export default function Landing() {
           </div>
         </section>
 
-        <section className="capabilityGrid" aria-label="What June can do">
+        <section className="capabilityGrid" aria-label="What Auren can do">
           <article>
             <span className="capabilityIndex">01</span>
             <div>

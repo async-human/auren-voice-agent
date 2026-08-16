@@ -18,7 +18,7 @@ import httpx
 logger = logging.getLogger("auren.memory")
 
 DISTILL_PROMPT = """\
-You extract durable personal memory from a voice conversation with June.
+You extract durable personal memory from a voice conversation with Auren.
 
 Return ONLY valid JSON with this shape:
 {
@@ -67,7 +67,7 @@ class TranscriptBuffer:
     def as_dialog(self) -> str:
         lines = []
         for turn in self.turns:
-            speaker = "User" if turn["role"] == "user" else "June"
+            speaker = "User" if turn["role"] == "user" else "Auren"
             lines.append(f"{speaker}: {turn['text']}")
         return "\n".join(lines)
 
