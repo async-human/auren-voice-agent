@@ -215,9 +215,23 @@ def verify_audio_pipeline() -> None:
 
 def main() -> None:
     READY_FILE.unlink(missing_ok=True)
-    for config in STT_CONFIGS.values():
-        print(f"Waiting for {config.provider} STT health", flush=True)
-        wait_for_json(config.health_url, api_key=config.api_key)
+    # Only the selected default is a boot dependency. Optional companion
+    # providers are reported by health_server and can recover independently;
+    # an unavailable Qwen endpoint must never prevent Whisper from starting.
+    print(f"Waiting for required {STT_CONFIG.provider} STT health", flush=True)
+    wait_for_json(STT_CONFIG.health_url, api_key=STT_CONFIG.api_key)
+    for provider, config in STT_CONFIGS.items():
+        if provider == STT_CONFIG.provider:
+            continue
+        try:
+            wait_for_json(config.health_url, timeout=10, api_key=config.api_key)
+            print(f"Optional {provider} STT is reachable", flush=True)
+        except RuntimeError as error:
+            print(
+                f"Optional {provider} STT is unavailable; continuing with "
+                f"{STT_CONFIG.provider}: {error}",
+                flush=True,
+            )
     preload_stt()
     # Load ASR while the GPU is still empty. Doing this after Ollama/Chatterbox
     # can yield an out-of-memory failure on shared GPU deployments.

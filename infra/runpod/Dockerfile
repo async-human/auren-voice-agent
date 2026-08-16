@@ -72,13 +72,19 @@ RUN git clone https://github.com/speaches-ai/speaches.git /opt/speaches \
     && chown -R auren:auren /opt/speaches
 
 # Chatterbox server: Python 3.10 and the Ampere-compatible CUDA 12.1 wheels.
+# PyTorch's CUDA wheel index intentionally supplements PyPI. uv's secure
+# first-index default can otherwise select that index for an NVIDIA transitive
+# dependency that only has the required version on PyPI, so this pinned
+# environment advances to the next index only when no compatible version exists.
 COPY infra/runpod/requirements-chatterbox.txt /tmp/requirements-chatterbox.txt
 RUN git clone https://github.com/devnen/Chatterbox-TTS-Server.git /opt/chatterbox \
     && cd /opt/chatterbox \
     && git checkout "${CHATTERBOX_SERVER_COMMIT}" \
     && test "$(git rev-parse HEAD)" = "${CHATTERBOX_SERVER_COMMIT}" \
     && uv venv --python 3.10 .venv \
-    && uv pip install --python .venv/bin/python -r /tmp/requirements-chatterbox.txt \
+    && uv pip install --python .venv/bin/python \
+       --index-strategy unsafe-first-match \
+       -r /tmp/requirements-chatterbox.txt \
     && uv pip install --python .venv/bin/python --no-deps \
        "git+https://github.com/devnen/chatterbox-v2.git@${CHATTERBOX_ENGINE_COMMIT}" \
        s3tokenizer==0.3.0 onnx==1.16.0 \
@@ -112,7 +118,9 @@ COPY --chown=auren:auren \
     services/voice-worker/stt_provider.py \
     services/voice-worker/stt_settings.py \
     services/voice-worker/http_headers.py \
+    services/voice-worker/skills.py \
     ./
+COPY --chown=auren:auren services/voice-worker/skill_specs ./skill_specs
 
 COPY infra/runpod/supervisord.conf /etc/supervisor/conf.d/auren.conf
 COPY --chown=auren:auren --chmod=0755 infra/runpod/scripts /opt/auren/bin

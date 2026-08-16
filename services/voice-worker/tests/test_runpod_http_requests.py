@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -128,6 +129,71 @@ class RunPodHttpRequestTests(unittest.TestCase):
         self.assertTrue(
             request.get_header("Content-type").startswith("multipart/form-data;")
         )
+
+    def test_optional_stt_outage_does_not_block_bootstrap(self) -> None:
+        whisper = SimpleNamespace(
+            provider="whisper", health_url="http://whisper/health", api_key=None
+        )
+        qwen = SimpleNamespace(
+            provider="qwen", health_url="https://qwen/health", api_key="secret"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "models-ready"
+
+            def probe(url: str, **_kwargs: object) -> None:
+                if "qwen" in url:
+                    raise RuntimeError("timed out")
+
+            with (
+                patch.object(bootstrap_models, "STT_CONFIG", whisper),
+                patch.object(
+                    bootstrap_models,
+                    "STT_CONFIGS",
+                    {"whisper": whisper, "qwen": qwen},
+                ),
+                patch.object(bootstrap_models, "READY_FILE", marker),
+                patch.object(bootstrap_models, "wait_for_json", side_effect=probe),
+                patch.object(bootstrap_models, "preload_stt") as preload_stt,
+                patch.object(bootstrap_models, "warmup_stt") as warmup_stt,
+                patch.object(bootstrap_models, "preload_ollama"),
+                patch.object(bootstrap_models, "verify_audio_pipeline"),
+            ):
+                bootstrap_models.main()
+
+        preload_stt.assert_called_once_with()
+        warmup_stt.assert_called_once_with()
+
+    def test_optional_stt_outage_reports_degraded_but_ready(self) -> None:
+        whisper = SimpleNamespace(provider="whisper", model="whisper-model")
+        qwen = SimpleNamespace(provider="qwen", model="qwen-model")
+
+        def provider_health(url: str, **_kwargs: object) -> tuple[bool, str]:
+            if "qwen" in url:
+                return False, "TimeoutError"
+            return True, "http_200"
+
+        whisper.health_url = "http://whisper/health"
+        whisper.api_key = None
+        qwen.health_url = "https://qwen/health"
+        qwen.api_key = "secret"
+        with (
+            patch.object(health_server, "STT_CONFIG", whisper),
+            patch.object(
+                health_server,
+                "STT_CONFIGS",
+                {"whisper": whisper, "qwen": qwen},
+            ),
+            patch.object(health_server, "http_ok", side_effect=provider_health),
+            patch.object(health_server, "process_ok", return_value=(True, "RUNNING")),
+            patch.object(health_server, "audio_smoke", return_value=(True, {"status": "passed"})),
+            patch.object(health_server.Path, "is_file", return_value=True),
+        ):
+            ready, body = health_server.readiness()
+
+        self.assertTrue(ready)
+        self.assertEqual(body["status"], "degraded")
+        self.assertEqual(body["stt_available_providers"], ["whisper"])
+        self.assertEqual(body["stt_configured_providers"], ["whisper", "qwen"])
 
 
 if __name__ == "__main__":

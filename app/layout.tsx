@@ -17,7 +17,7 @@ const interTight = Inter_Tight({
 });
 
 export const metadata: Metadata = {
-  title: "June",
+  title: "Auren",
   description: "A personal voice operator that remembers with your consent",
 };
 

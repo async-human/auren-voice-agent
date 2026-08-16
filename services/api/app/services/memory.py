@@ -75,13 +75,20 @@ def _memory_item(memory: Memory) -> MemoryItem:
     )
 
 
-def build_greeting(display_name: str | None, last_summary: str | None) -> str:
+def build_greeting(
+    display_name: str | None,
+    last_summary: str | None,
+    *,
+    assistant_name: str = "Auren",
+    form_of_address: str = "",
+) -> str:
+    address = f"{form_of_address}. " if form_of_address else ""
     snippet = (last_summary or "").strip()
     if len(snippet) > 120:
         snippet = f"{snippet[:117]}..."
     if snippet:
-        return f"Boss. June online. Last time: {snippet}. Ready to pick it up?"
-    return "Boss. June here — systems up. What are we doing?"
+        return f"{address}{assistant_name} online. Last time: {snippet}. Ready to pick it up?"
+    return f"{address}{assistant_name} here — systems up. What are we doing?"
 
 
 def build_instructions_block(
@@ -94,6 +101,10 @@ def build_instructions_block(
     last_summary: str | None,
     open_threads: list[str] | None = None,
     unread_notifications: list | None = None,
+    *,
+    assistant_name: str = "Auren",
+    form_of_address: str = "",
+    assistant_language: str = "match-user",
 ) -> str:
     lines = [
         "Personal context for this user (use naturally; do not recite as a list):",
@@ -127,10 +138,21 @@ def build_instructions_block(
             lines.append(f"  • {memory.content}")
     else:
         lines.append("- No durable memories stored yet.")
+    address_instruction = (
+        f"Address the user as {form_of_address}, but do not overuse it. "
+        if form_of_address
+        else "Use the user's preferred form of address when known; otherwise be neutral. "
+    )
+    language_instruction = (
+        "Match the language the user is currently speaking. "
+        if assistant_language == "match-user"
+        else f"Reply in {assistant_language} unless the user asks to switch. "
+    )
     lines.append(
-        "Address the user as Boss, never by first name. Do not overuse it. "
-        "You are June: dry, loyal, brief, a little wry — like FRIDAY, not a receptionist. "
-        "Refer to prior context only when relevant. "
+        address_instruction
+        + f"You are {assistant_name}: dry, loyal, brief, and a little wry. "
+        + language_instruction
+        + "Refer to prior context only when relevant. "
         "If they ask for weather/forecast and a home city appears under "
         "Things to remember or Profile, use that city instead of asking again. "
         "If they ask what you discussed last time, answer from 'Previous conversation' "
@@ -185,7 +207,14 @@ async def get_user(session: AsyncSession, user_id: str) -> User | None:
     return await session.get(User, user_id)
 
 
-async def get_context(session: AsyncSession, user_id: str) -> MemoryContextResponse:
+async def get_context(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    assistant_name: str = "Auren",
+    form_of_address: str = "",
+    assistant_language: str = "match-user",
+) -> MemoryContextResponse:
     user = await get_user(session, user_id)
     profile = await session.get(UserProfile, user_id)
     google_connection = await session.scalar(
@@ -234,14 +263,19 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
         )
         for row in speech_rows
     ]
-    greeting = build_greeting(display_name, last_summary)
+    greeting = build_greeting(
+        display_name,
+        last_summary,
+        assistant_name=assistant_name,
+        form_of_address=form_of_address,
+    )
     if pending_speech:
         spoken = " ".join(item.speak_text for item in pending_speech[:3])
         greeting = f"{greeting} {spoken}"
     elif unread_items:
         greeting = (
             f"{greeting} {len(unread_items)} item"
-            f"{'' if len(unread_items) == 1 else 's'} waiting in the inbox, Boss."
+            f"{'' if len(unread_items) == 1 else 's'} waiting in the inbox."
         )
 
     return MemoryContextResponse(
@@ -267,6 +301,9 @@ async def get_context(session: AsyncSession, user_id: str) -> MemoryContextRespo
             last_summary,
             open_threads,
             unread_items,
+            assistant_name=assistant_name,
+            form_of_address=form_of_address,
+            assistant_language=assistant_language,
         ),
     )
 

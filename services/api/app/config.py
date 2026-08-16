@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_poll_seconds: int = Field(default=30, ge=5)
 
+    # Product identity is configuration, not prompt debt. Use the same values
+    # on the API and voice worker in each environment.
+    assistant_name: str = "Auren"
+    assistant_form_of_address: str = ""
+    assistant_language: str = "match-user"
+
     # Optional: wake a stopped RunPod when spoken delivery is allowed.
     # Leave unset for local testing while the pod is already running.
     runpod_api_key: str | None = None
@@ -73,6 +79,7 @@ class Settings(BaseSettings):
     # into signed LiveKit metadata; the worker owns endpoint credentials.
     stt_default_provider: Literal["whisper", "qwen"] = "whisper"
     stt_available_providers: str = "whisper"
+    voice_worker_health_url: str | None = None
 
     # Generated user artifacts. Mount this directory on persistent storage in
     # production; files are immutable and metadata lives in the database.
@@ -107,6 +114,11 @@ class Settings(BaseSettings):
         if self.stt_default_provider not in providers:
             raise ValueError(
                 "STT_DEFAULT_PROVIDER must be included in STT_AVAILABLE_PROVIDERS"
+            )
+        if self.is_production and len(providers) > 1 and not self.voice_worker_health_url:
+            raise ValueError(
+                "VOICE_WORKER_HEALTH_URL is required when production advertises "
+                "multiple STT providers"
             )
         return self
 

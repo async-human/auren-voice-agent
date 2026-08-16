@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -107,6 +108,75 @@ async def test_future_job_remains_scheduled(settings: Settings) -> None:
     assert untouched.status == "scheduled"
     assert untouched.attempts == 0
     assert reminder_count == 0
+
+    await engine.dispose()
+
+
+async def test_concurrent_scheduler_ticks_claim_a_job_once(settings: Settings) -> None:
+    engine = create_engine(settings)
+    await create_schema(engine)
+    session_factory = create_session_factory(engine)
+
+    async with session_factory() as session:
+        session.add(
+            ScheduledJob(
+                user_id="concurrent-user",
+                job_type="follow_up_reminder",
+                payload={"message": "Send the proposal follow-up"},
+                run_at=utcnow() - timedelta(minutes=1),
+                status="scheduled",
+            )
+        )
+        await session.commit()
+
+    await asyncio.gather(
+        process_due_work(session_factory),
+        process_due_work(session_factory),
+    )
+
+    async with session_factory() as session:
+        jobs = (await session.scalars(select(ScheduledJob))).all()
+        reminders = (await session.scalars(select(Reminder))).all()
+        notifications = (await session.scalars(select(Notification))).all()
+
+    assert len(jobs) == 1
+    assert jobs[0].status == "completed"
+    assert jobs[0].attempts == 1
+    assert jobs[0].locked_at is None
+    assert len(reminders) == 1
+    assert len(notifications) == 1
+
+    await engine.dispose()
+
+
+async def test_stale_running_job_is_reclaimed_after_lease(settings: Settings) -> None:
+    engine = create_engine(settings)
+    await create_schema(engine)
+    session_factory = create_session_factory(engine)
+
+    async with session_factory() as session:
+        job = ScheduledJob(
+            user_id="recovery-user",
+            job_type="follow_up_reminder",
+            payload={"message": "Recover this follow-up"},
+            run_at=utcnow() - timedelta(hours=1),
+            status="running",
+            attempts=1,
+            locked_at=utcnow() - timedelta(minutes=20),
+        )
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    await process_due_work(session_factory)
+
+    async with session_factory() as session:
+        recovered = await session.get(ScheduledJob, job_id)
+
+    assert recovered is not None
+    assert recovered.status == "completed"
+    assert recovered.attempts == 2
+    assert recovered.locked_at is None
 
     await engine.dispose()
 

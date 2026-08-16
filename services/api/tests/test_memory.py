@@ -60,12 +60,11 @@ async def test_memory_flush_and_context(
     assert payload["display_name"] == "Alice Example"
     assert payload["email"] == "alice@example.com"
     assert "Authenticated sign-in email: alice@example.com" in payload["instructions_block"]
-    assert "Boss" in payload["greeting"]
-    assert "June" in payload["greeting"]
+    assert "Auren" in payload["greeting"]
     assert "robotics" in (payload["last_session_summary"] or "").lower()
     assert payload["open_threads"] == ["Ask about Alice's current robotics project"]
     assert payload["memories"] == []
-    assert "Address the user as Boss" in payload["instructions_block"]
+    assert "preferred form of address" in payload["instructions_block"]
 
 
 async def test_user_can_list_and_forget_memories(

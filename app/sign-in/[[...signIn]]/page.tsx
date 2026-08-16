@@ -8,7 +8,7 @@ export default function SignInPage() {
       <div className="grain" aria-hidden="true" />
       <div className="authBrand">
         <span className="mark" />
-        <span>June</span>
+        <span>Auren</span>
       </div>
       <SignIn
         path="/sign-in"

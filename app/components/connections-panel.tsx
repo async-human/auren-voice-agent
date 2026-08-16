@@ -136,7 +136,7 @@ export default function ConnectionsPanel({
         </button>
       </div>
       <p className="memoryLead">
-        Connect Google so June can manage calendar events and email with clear
+        Connect Google so Auren can manage calendar events and email with clear
         approval before consequential changes — not just tell you how.
       </p>
 

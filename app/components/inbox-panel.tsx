@@ -138,7 +138,7 @@ export default function InboxPanel({ open, onClose, onUnreadChange }: Props) {
   if (!open) return null;
 
   return (
-    <aside className="memoryPanel" aria-label="June inbox">
+    <aside className="memoryPanel" aria-label="Auren inbox">
       <div className="memoryHead">
         <div>
           <p className="memoryEyebrow">Proactive delivery</p>
@@ -159,7 +159,7 @@ export default function InboxPanel({ open, onClose, onUnreadChange }: Props) {
         </p>
       )}
       {!loading && items.length === 0 && (
-        <p className="tip">Nothing waiting. Ask June to remind you in a minute to test this.</p>
+        <p className="tip">Nothing waiting. Ask Auren to remind you in a minute to test this.</p>
       )}
       <ul className="memoryList">
         {items.map((item) => (
@@ -201,7 +201,7 @@ export default function InboxPanel({ open, onClose, onUnreadChange }: Props) {
 
       {settings && (
         <div className="connectionBlock">
-          <h3>When June may interrupt</h3>
+          <h3>When Auren may interrupt</h3>
           <p>
             Inbox is always written. Spoken delivery and pod wake stay inside quiet hours
             and the daily cap.

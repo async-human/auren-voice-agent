@@ -21,16 +21,15 @@ can be skipped without weakening the next.
 
 ## Where we are
 
-Working today: LiveKit voice loop with local STT, LLM, and TTS on RunPod; a
-FastAPI tool gateway on Railway with seven tools; reminders and notes persisted
-in Postgres; a chat UI with text input; idle shutdown for the GPU pod.
+Working today: LiveKit voice with selectable Whisper or independently deployed
+Qwen ASR; local LLM and TTS on RunPod; an authenticated FastAPI tool gateway;
+Google Calendar and Gmail with two-phase approvals; documents and downloads;
+durable memory; visible workflow execution; an inbox; and scheduled delivery.
 
-Phases 0 and 1 are complete: verified identity, conversation persistence,
-personal memory with consent, and a contextual greeting. One gap still blocks
-the proactive feel people expect:
-
-1. **Nothing delivers a reminder.** They are stored with a `due_at` and read back
-   on request. No process ever notices that one is due. (Phase 4)
+Phases 0, 1, 3, and the initial Phase 4 delivery loop are implemented. The next
+goal is not more horizontal tools. It is proving one repeated, valuable outcome:
+the [client follow-up operator](PRODUCT_WEDGE.md). Reliability, latency, and
+end-to-end evaluations for that workflow now take priority over breadth.
 
 ---
 

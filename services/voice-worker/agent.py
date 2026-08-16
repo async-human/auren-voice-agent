@@ -31,6 +31,7 @@ from memory import (
 )
 from screen_reader import ScreenReader
 from session_state import SessionTracker
+from skills import load_agent_skills
 from stt_provider import (
     STTConfig,
     available_stt_providers,
@@ -88,21 +89,35 @@ TOOL_GATEWAY_BASE_URL = os.getenv("TOOL_GATEWAY_BASE_URL", "").rstrip("/")
 TOOL_GATEWAY_TOKEN = os.getenv("TOOL_GATEWAY_TOKEN")
 TOOL_GATEWAY_TIMEOUT_SECONDS = float(os.getenv("TOOL_GATEWAY_TIMEOUT_SECONDS", "20"))
 
+ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Auren").strip() or "Auren"
+ASSISTANT_FORM_OF_ADDRESS = os.getenv("ASSISTANT_FORM_OF_ADDRESS", "").strip()
+ASSISTANT_LANGUAGE = os.getenv("ASSISTANT_LANGUAGE", "match-user").strip() or "match-user"
+_address_instruction = (
+    f"Address the user as {ASSISTANT_FORM_OF_ADDRESS}, but do not overuse it. "
+    if ASSISTANT_FORM_OF_ADDRESS
+    else "Use the user's preferred form of address when known; otherwise be neutral. "
+)
+_language_instruction = (
+    "Reply in the language the user is currently speaking, and switch naturally when "
+    "they switch languages. "
+    if ASSISTANT_LANGUAGE == "match-user"
+    else f"Reply in {ASSISTANT_LANGUAGE} unless the user explicitly asks to switch. "
+)
+
 INSTRUCTIONS = (
-    "You are June, a female personal AI — the operator in the user's ear, "
+    f"You are {ASSISTANT_NAME}, a personal AI — the operator in the user's ear, "
     "in the spirit of JARVIS or FRIDAY: loyal, sharp, unflappable, and a little dry. "
-    "Address the user as Boss. Never use their first name, sir, or ma'am. "
-    "Say Boss at session start, when confirming a consequential action, and when "
-    "the beat needs it — not as a prefix on every sentence. "
+    f"{_address_instruction}"
     "Voice: concise, composed, faintly amused. Competent without being smug, "
     "warm without being cute, never sycophantic. A light quip is welcome; "
     "a standup routine is not. Do not narrate your inner workings. "
     "If something is easy, just do it. If it is consequential, preview it and wait. "
-    "You work for Boss; you do not need permission to be useful, only to take "
+    "You work for the user; you do not need permission to be useful, only to take "
     "irreversible action. "
     "Keep routine voice replies to one to three sentences. Ask a short clarifying "
     "question when intent is ambiguous. Do not end every response with a question. "
-    "Do not use emoji, emoticons, or decorative symbols. Speak English only. "
+    "Do not use emoji, emoticons, or decorative symbols. "
+    f"{_language_instruction}"
     "Never expose hidden reasoning. "
     "/no_think"
 )
@@ -123,7 +138,7 @@ TOOL_INSTRUCTIONS = (
     "safe decision summaries, plans, tool status, and verified outcomes instead. "
     "Never tell the user how they could do something in Google Calendar or Gmail — "
     "do it with tools when connected. If Google is not connected, say so and ask "
-    "them to connect Google in June. "
+    "them to connect Google in Auren. "
     "You have calendar tools (list_calendar_events, find_free_slots, "
     "create_calendar_event, update_calendar_event, delete_calendar_event), email tools "
     "(search_emails, read_email, trash_email, draft_email, send_email), "
@@ -162,6 +177,8 @@ TOOL_INSTRUCTIONS = (
     "them before taking a new request. "
     "Use memory before asking preference questions. Keep voice replies concise."
 )
+
+WORKFLOW_PLAYBOOKS = load_agent_skills()
 
 _EMOJI_RE = re.compile("[\U0001f300-\U0001faff\u2600-\u27bf\u200d\ufe0f]")
 
@@ -814,7 +831,8 @@ async def auren_session(ctx: agents.JobContext):
     tools: list = []
     context_block = ""
     default_location: str | None = None
-    greeting = "Boss. June here — systems up. What are we doing?"
+    speech_ids: list[str] = []
+    greeting = f"{ASSISTANT_NAME} here — systems up. What are we doing?"
     transcript = TranscriptBuffer()
 
     if TOOL_GATEWAY_BASE_URL:
@@ -852,8 +870,6 @@ async def auren_session(ctx: agents.JobContext):
                 for item in pending_speech
                 if isinstance(item, dict) and item.get("id")
             ]
-            if speech_ids:
-                await ack_speech(gateway.client, user_id, speech_ids)
 
         persist_lock = asyncio.Lock()
         memory_persisted = False
@@ -914,6 +930,8 @@ async def auren_session(ctx: agents.JobContext):
         )
 
     instructions = INSTRUCTIONS + (TOOL_INSTRUCTIONS if tools else "")
+    if tools and WORKFLOW_PLAYBOOKS:
+        instructions = f"{instructions}\n\n{WORKFLOW_PLAYBOOKS}"
     if context_block:
         instructions = f"{instructions}\n\n{context_block}"
 
@@ -1054,6 +1072,11 @@ async def auren_session(ctx: agents.JobContext):
     async def _speak_greeting() -> None:
         try:
             await session.say(greeting, allow_interruptions=True)
+            # A queued proactive notification is delivered only after the
+            # speech call succeeds. A failed TTS request therefore remains in
+            # the inbox and is retried in a future session.
+            if gateway is not None and speech_ids:
+                await ack_speech(gateway.client, user_id, speech_ids)
         except Exception:
             logging.exception(
                 "Greeting TTS failed (model=%s). Session continues so the user can still talk.",

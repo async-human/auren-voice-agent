@@ -10,7 +10,7 @@ import logging
 from datetime import timedelta
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -26,6 +26,7 @@ from app.tools.email_tools import SearchEmailsArgs, search_emails
 logger = logging.getLogger("auren.jobs")
 
 MAX_ATTEMPTS = 5
+JOB_LEASE = timedelta(minutes=15)
 
 
 def _payload_message(job: ScheduledJob) -> str:
@@ -99,7 +100,7 @@ async def handle_follow_up(
         job,
         kind="follow_up",
         title=message[:300],
-        body="This follow-up is due. Open June when you want to continue.",
+        body="This follow-up is due. Open Auren when you want to continue.",
         api_settings=api_settings,
         http=http,
     )
@@ -280,13 +281,24 @@ async def run_due_jobs(
     api_settings: Settings | None,
     http: httpx.AsyncClient | None,
 ) -> int:
+    now = utcnow()
+    stale_before = now - JOB_LEASE
     async with session_factory() as session:
         jobs = (
             await session.scalars(
                 select(ScheduledJob)
                 .where(
-                    ScheduledJob.status == "scheduled",
-                    ScheduledJob.run_at <= utcnow(),
+                    or_(
+                        and_(
+                            ScheduledJob.status == "scheduled",
+                            ScheduledJob.run_at <= now,
+                        ),
+                        and_(
+                            ScheduledJob.status == "running",
+                            ScheduledJob.locked_at.is_not(None),
+                            ScheduledJob.locked_at <= stale_before,
+                        ),
+                    )
                 )
                 .order_by(ScheduledJob.run_at)
                 .limit(20)
@@ -297,12 +309,34 @@ async def run_due_jobs(
     completed = 0
     for job_id in job_ids:
         async with session_factory() as session:
-            job = await session.get(ScheduledJob, job_id)
-            if job is None or job.status != "scheduled":
+            claimed_at = utcnow()
+            claim = await session.execute(
+                update(ScheduledJob)
+                .where(
+                    ScheduledJob.id == job_id,
+                    or_(
+                        and_(
+                            ScheduledJob.status == "scheduled",
+                            ScheduledJob.run_at <= claimed_at,
+                        ),
+                        and_(
+                            ScheduledJob.status == "running",
+                            ScheduledJob.locked_at.is_not(None),
+                            ScheduledJob.locked_at <= claimed_at - JOB_LEASE,
+                        ),
+                    ),
+                )
+                .values(
+                    status="running",
+                    attempts=ScheduledJob.attempts + 1,
+                    last_error=None,
+                    locked_at=claimed_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if claim.rowcount != 1:
+                await session.rollback()
                 continue
-            job.status = "running"
-            job.attempts += 1
-            job.last_error = None
             await session.commit()
 
         async with session_factory() as session:
@@ -316,6 +350,7 @@ async def run_due_jobs(
                 job.status = "completed"
                 job.completed_at = utcnow()
                 job.last_error = None
+                job.locked_at = None
                 completed += 1
             except Exception as error:  # noqa: BLE001 - jobs must not kill the scheduler
                 logger.exception("Job %s (%s) failed", job.id, job.job_type)
@@ -325,6 +360,7 @@ async def run_due_jobs(
                 else:
                     job.status = "scheduled"
                     job.run_at = utcnow() + timedelta(minutes=job.attempts)
+                job.locked_at = None
             await session.commit()
             logger.info(
                 "Job %s type=%s user=%s status=%s",

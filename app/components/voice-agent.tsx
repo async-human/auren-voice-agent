@@ -29,12 +29,6 @@ const fallbackSttOptions: SttOption[] = [
     description: "Mature and dependable multilingual transcription.",
     realtime: false,
   },
-  {
-    id: "qwen",
-    label: "Qwen3-ASR",
-    description: "Accuracy-focused multilingual transcription.",
-    realtime: false,
-  },
 ];
 const STT_PREFERENCE_KEY = "auren.stt-provider";
 
@@ -290,7 +284,7 @@ function describeFailure(error: unknown): string {
     return "Your browser blocked microphone access. Allow it for this site and try again.";
   }
   if (/Sign in to continue|401/.test(message)) {
-    return "Your session expired. Sign in again to keep talking to June.";
+    return "Your session expired. Sign in again to keep talking to Auren.";
   }
   if (/Authentication is not configured/i.test(message)) {
     return "The API has no identity provider configured. Set CLERK_ISSUER on the API, or DEV_USER_ID for offline work.";
@@ -306,7 +300,7 @@ const labels: Record<Phase, string> = {
   connecting: "Joining…",
   listening: "Listening…",
   thinking: "One moment",
-  speaking: "June is speaking",
+  speaking: "Auren is speaking",
   paused: "Paused — tap to resume",
 };
 
@@ -452,7 +446,11 @@ export default function VoiceAgent() {
           `${apiBaseUrl.replace(/\/$/, "")}/v1/voice/stt-options`,
           { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
         );
-        if (!response.ok) return;
+        if (!response.ok) {
+          setSttOptions(fallbackSttOptions);
+          setSelectedSttProvider("whisper");
+          return;
+        }
         const body = (await response.json()) as {
           default_provider: SttProvider;
           providers: SttOption[];
@@ -471,7 +469,9 @@ export default function VoiceAgent() {
         )?.id;
         setSelectedSttProvider(preferred ?? defaultProvider ?? available[0].id);
       } catch {
-        // Provider discovery is optional; Whisper remains the safe fallback.
+        // Never advertise an unverified remote provider.
+        setSttOptions(fallbackSttOptions);
+        setSelectedSttProvider("whisper");
       }
     };
     void loadSttOptions();
@@ -585,7 +585,7 @@ export default function VoiceAgent() {
           } catch (error) {
             console.error("Auren voice playback blocked", error);
             setFailure(
-              "Browser blocked June’s voice. Click “June’s voice” or tap anywhere on the page, then ask again.",
+              "Browser blocked Auren’s voice. Click “Auren’s voice” or tap anywhere on the page, then ask again.",
             );
           }
         };
@@ -642,7 +642,7 @@ export default function VoiceAgent() {
         if (role === "user") {
           setNotice("Got it — thinking");
         } else {
-          setNotice("June replied — voice may take a moment while speech synthesizes");
+          setNotice("Auren replied — voice may take a moment while speech synthesizes");
           void activeRoom.startAudio().catch(() => {
             // Autoplay unlock is best-effort; TrackSubscribed also retries play().
           });
@@ -901,7 +901,7 @@ export default function VoiceAgent() {
         );
         if (agentIsSpeaking) {
           setPhase("speaking");
-          setNotice("June is speaking");
+          setNotice("Auren is speaking");
           if (!voiceMutedRef.current) {
             void activeRoom.startAudio().catch(() => undefined);
             audioElementsRef.current.forEach((element) => {
@@ -1034,7 +1034,7 @@ export default function VoiceAgent() {
       setIsScreenSharing(nextEnabled);
       setNotice(
         nextEnabled
-          ? "Screen shared — ask June what you’re looking at"
+          ? "Screen shared — ask Auren what you’re looking at"
           : "Screen share stopped",
       );
     } catch (error) {
@@ -1083,7 +1083,7 @@ export default function VoiceAgent() {
       }
     });
     setIsVoiceMuted(nextMuted);
-    setNotice(nextMuted ? "June’s voice is muted" : "June’s voice is on");
+    setNotice(nextMuted ? "Auren’s voice is muted" : "Auren’s voice is on");
     if (!nextMuted) setFailure(null);
   }, [isVoiceMuted]);
 
@@ -1112,7 +1112,7 @@ export default function VoiceAgent() {
       ]);
       setDraft("");
       setPhase("thinking");
-      setNotice("Message sent — June is thinking");
+      setNotice("Message sent — Auren is thinking");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Message could not be sent");
     } finally {
@@ -1167,7 +1167,7 @@ export default function VoiceAgent() {
           <div className="who">
             <span className="mark" aria-hidden="true"><i /></span>
             <span className="whoName">
-              June
+              Auren
               <small>Standing by</small>
             </span>
           </div>
@@ -1242,9 +1242,9 @@ export default function VoiceAgent() {
               <p className="presenceEyebrow">
                 <span className="liveDot" aria-hidden="true" />
                 {activeToolActivity
-                  ? "June is taking action"
+                  ? "Auren is taking action"
                   : phase === "idle"
-                    ? "June is here"
+                    ? "Auren is here"
                     : "Private session active"}
               </p>
               <div
@@ -1274,7 +1274,7 @@ export default function VoiceAgent() {
                 <div className="sttPickerHead">
                   <div>
                     <span>Voice recognition</span>
-                    <strong>Choose how June hears you</strong>
+                    <strong>Choose how Auren hears you</strong>
                   </div>
                   <small>{phase === "idle" ? "For next call" : "In use"}</small>
                 </div>
@@ -1363,7 +1363,7 @@ export default function VoiceAgent() {
                 <div className="activityEmpty">
                   <span aria-hidden="true"><i /><i /><i /></span>
                   <p>
-                    June will show her plan, safe decision summaries, tool calls,
+                    Auren will show its plan, safe decision summaries, tool calls,
                     approvals, and verified outcomes here.
                   </p>
                 </div>
@@ -1424,7 +1424,7 @@ export default function VoiceAgent() {
             <div className="workspaceHead">
               <div>
                 <span>Conversation space</span>
-                <h2>{messages.length ? "You and June" : "A new thought"}</h2>
+                <h2>{messages.length ? "You and Auren" : "A new thought"}</h2>
               </div>
               <span className="turnCount"><i aria-hidden="true" />{messages.length} {messages.length === 1 ? "turn" : "turns"}</span>
             </div>
@@ -1437,12 +1437,12 @@ export default function VoiceAgent() {
             {!hasConversation && (
               <div className="emptyConversation">
                 <span className="emptySignal" aria-hidden="true"><i /><i /><i /><i /><i /></span>
-                <p className="emptyEyebrow">June is standing by.</p>
-                <h1>Go ahead, Boss.</h1>
+                <p className="emptyEyebrow">Auren is standing by.</p>
+                <h1>Go ahead.</h1>
                 <p>Talk like you would to an operator who already has the brief.</p>
                 {pageContext?.present && (
                   <p className="pageContextHint">
-                    Page ready: {pageContext.title || "Shared article"}. Ask June to explain it.
+                    Page ready: {pageContext.title || "Shared article"}. Ask Auren to explain it.
                   </p>
                 )}
               </div>
@@ -1455,7 +1455,7 @@ export default function VoiceAgent() {
             {messages.map((message) => (
               <article className={`chatMessage ${message.role}`} key={message.id}>
                 <span className="chatSpeaker">
-                  {message.role === "user" ? "You" : "June"}
+                  {message.role === "user" ? "You" : "Auren"}
                 </span>
                 {message.role === "assistant" ? (
                   <MarkdownMessage text={message.text} />
@@ -1467,15 +1467,15 @@ export default function VoiceAgent() {
             {interim && (
               <article className={`chatMessage ${interim.role} interimMessage`}>
                 <span className="chatSpeaker">
-                  {interim.role === "user" ? "You" : "June"}
+                  {interim.role === "user" ? "You" : "Auren"}
                 </span>
                 <p className="chatBubble" dir="ltr">{interim.text}</p>
               </article>
             )}
             {isWaitingForAuren && !interim && (
               <article className="chatMessage assistant interimMessage">
-                <span className="chatSpeaker">June</span>
-                <div className="chatBubble thinkingBubble" aria-label="June is thinking">
+                <span className="chatSpeaker">Auren</span>
+                <div className="chatBubble thinkingBubble" aria-label="Auren is thinking">
                   <span className="ellipsis">
                     <i /><i /><i />
                   </span>
@@ -1501,7 +1501,7 @@ export default function VoiceAgent() {
 
           {isTypeOpen && (
             <form className="typebar" onSubmit={sendTextMessage}>
-              <label className="srOnly" htmlFor="message-input">Message June</label>
+              <label className="srOnly" htmlFor="message-input">Message Auren</label>
               <input
                 id="message-input"
                 type="text"
@@ -1531,7 +1531,7 @@ export default function VoiceAgent() {
                   <path d="M11 5 6 9H3v6h3l5 4V5z" />
                   {!isVoiceMuted && <path d="M15.5 9.5a4 4 0 0 1 0 5M18.5 7a8 8 0 0 1 0 10" />}
                 </svg>
-                <span>{isVoiceMuted ? "Voice off" : "June’s voice"}</span>
+                <span>{isVoiceMuted ? "Voice off" : "Auren’s voice"}</span>
               </button>
             )}
             <button

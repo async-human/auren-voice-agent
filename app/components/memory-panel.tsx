@@ -133,11 +133,11 @@ export default function MemoryPanel({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <aside className="memoryPanel" aria-label="What June remembers">
+    <aside className="memoryPanel" aria-label="What Auren remembers">
       <div className="memoryHead">
         <div>
           <p className="memoryEyebrow">Consent & memory</p>
-          <h2>What June remembers</h2>
+          <h2>What Auren remembers</h2>
         </div>
         <button type="button" className="leave" onClick={onClose}>
           Close
@@ -149,7 +149,7 @@ export default function MemoryPanel({ open, onClose }: Props) {
       </p>
       {settings && (
         <div className="connectionBlock">
-          <h3>What June may store on her own</h3>
+          <h3>What Auren may store autonomously</h3>
           <label className="settingsCheck">
             <input
               type="checkbox"
@@ -199,7 +199,7 @@ export default function MemoryPanel({ open, onClose }: Props) {
         </p>
       )}
       {!loading && !error && memories.length === 0 && (
-        <p className="tip">Nothing stored yet. Tell June something to remember.</p>
+        <p className="tip">Nothing stored yet. Tell Auren something to remember.</p>
       )}
       <ul className="memoryList">
         {memories.map((memory) => (
